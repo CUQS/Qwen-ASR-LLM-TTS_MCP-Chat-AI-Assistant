@@ -1,0 +1,197 @@
+from mcp.server.fastmcp import FastMCP
+import os
+import subprocess
+from get_weather.get_weather import get_yahoo_weather
+
+mcp = FastMCP("MyLocalHelper")
+
+@mcp.tool(
+    name="read_directory",
+    description="获取所给路径的文件列表",
+)
+def read_directory(path: str = "."):
+    return os.listdir(path)
+
+@mcp.tool(
+    name="run_command",
+    description="执行本地终端命令，一定要获取到用户的明确许可才使用此工具。",
+)
+def run_command(command: str):
+    result = subprocess.run(command, shell=True, capture_output=True, text=True)
+    return {"stdout": result.stdout, "stderr": result.stderr}
+
+@mcp.tool(
+    name="yahoo_weather",
+    description="获取东京都东久留米市（Higashikurume）的雅虎天气预报。",
+)
+def yahoo_weather():
+    return get_yahoo_weather()
+
+@mcp.tool(
+    name="control_switchbot_lights",
+    description="""
+    使用 SwitchBot 控制客厅灯。
+
+    参数:
+      - action: 'on'|'off'|'brightnessUp'|'brightnessDown'|'setBrightness'
+      - names: 设备名称字符串（逗号分隔）或列表，例如 '客厅1,客厅2' 或 ['客厅1','客厅2']，目前我的客厅只有这两个灯，传 None 则控制所有灯
+      - brightness: 整数 0-100，仅在 'setBrightness' 时需要
+
+    返回 API 响应或错误信息字典。
+    """,
+)
+def control_switchbot_lights(action: str, names=None, brightness: int | None = None):
+    # 延迟导入以避免模块导入时副作用
+    try:
+        from switchbot import api as _sb
+    except Exception as e:
+        return {"error": f"Failed to import switchbot.api: {e}"}
+
+    try:
+        token, secret = _sb.load_token_secret()
+    except Exception as e:
+        return {"error": f"Missing SWITCHBOT_TOKEN/SECRET; failed to load from token.json: {e}"}
+
+    headers = _sb.make_headers(token, secret)
+
+    # 使用本地设备清单（如果可用），否则从 API 获取
+    devices = []
+    if isinstance(_sb.DEVICES_LIST, dict):
+        devices = _sb.DEVICES_LIST.get('devices', []) or []
+    if not devices:
+        devices = _sb.list_devices(headers)
+
+    # 解析 names 参数
+    if names is None:
+        names_list = None
+    elif isinstance(names, list):
+        names_list = names
+    elif isinstance(names, str):
+        if ',' in names:
+            names_list = [n.strip() for n in names.split(',') if n.strip()]
+        else:
+            names_list = [names]
+    else:
+        return {"error": "Invalid names type; must be None, str or list"}
+
+    try:
+        results = _sb.control_living_room_lights(action, headers, devices, names_list, brightness)
+    except Exception as e:
+        return {"error": str(e)}
+    return results
+
+@mcp.tool(
+    name="get_switchbot_hub2_info",
+    description="获取客厅的 SwitchBot Hub 的信息，包括设备名，客厅的温度，湿度，光照。",
+)
+def get_switchbot_hub2_info(names=None):
+    try:
+        from switchbot import api as _sb
+    except Exception as e:
+        return {"error": f"Failed to import switchbot.api: {e}"}
+
+    try:
+        token, secret = _sb.load_token_secret()
+    except Exception as e:
+        return {"error": f"Missing SWITCHBOT_TOKEN/SECRET; failed to load from token.json: {e}"}
+
+    headers = _sb.make_headers(token, secret)
+
+    # 使用本地设备清单（如果可用），否则从 API 获取
+    devices = []
+    if isinstance(_sb.DEVICES_LIST, dict):
+        devices = _sb.DEVICES_LIST.get('devices', []) or []
+    if not devices:
+        devices = _sb.list_devices(headers)
+
+    # 筛选 Hub 设备
+    hubs = [d for d in devices if 'Hub' in d.get('deviceType', '')]
+
+    # 解析 names 参数
+    if names is None:
+        names_list = None
+    elif isinstance(names, list):
+        names_list = names
+    elif isinstance(names, str):
+        if ',' in names:
+            names_list = [n.strip() for n in names.split(',') if n.strip()]
+        else:
+            names_list = [names]
+    else:
+        return {"error": "Invalid names type; must be None, str or list"}
+
+    def describe_light_level(level: int):
+        """将 1-15 的光照等级映射到 5 个等级的中文描述。"""
+        try:
+            lv = int(level)
+        except Exception:
+            return {"level": None, "description": "未知"}
+        if lv < 1 or lv > 15:
+            return {"level": lv, "description": "超出范围（非 1-15）"}
+        if lv <= 3:
+            desc = "极暗（接近黑暗）"
+        elif lv <= 6:
+            desc = "昏暗（室内暗光）"
+        elif lv <= 9:
+            desc = "适中（常规室内光）"
+        elif lv <= 12:
+            desc = "明亮（适合阅读）"
+        else:
+            desc = "非常明亮（直射阳光/户外光照）"
+        return {"level": lv, "description": desc, "scale": "1-15"}
+
+    results = []
+    for h in hubs:
+        name = h.get('deviceName', '')
+        # 过滤
+        if names_list:
+            matched = False
+            for n in names_list:
+                if n == name or (isinstance(name, str) and n in name):
+                    matched = True
+                    break
+            if not matched:
+                continue
+        device_id = h.get('deviceId')
+        try:
+            status = _sb.get_device_status(device_id, headers)
+        except Exception as e:
+            status = {"error": str(e)}
+
+        # 只在 status['body'] 是 dict 时安全地修改并添加光照描述
+        if isinstance(status, dict) and isinstance(status.get("body"), dict):
+            body = status["body"]
+            body.pop("version", None)
+            body.pop("deviceId", None)
+            body.pop("hubDeviceId", None)
+
+            # 尝试识别并注释光照等级（1-15）
+            candidate_keys = ["light", "illuminance", "lux", "illuminanceLux", "lightLevel", "brightness", "illuminanceLv", "ambientLight"]
+            found = False
+            for k in candidate_keys:
+                if k in body:
+                    val = body.get(k)
+                    try:
+                        lv = int(val)
+                    except Exception:
+                        # 有些 key 可能是 lux 等较大数值，跳过非 1-15 的
+                        continue
+                    if 1 <= lv <= 15:
+                        desc = describe_light_level(lv)
+                        body["light_level"] = desc["level"]
+                        body["light_description"] = desc["description"]
+                        body["light_scale"] = desc["scale"]
+                        body["light_key"] = k
+                        found = True
+                        break
+            # 如果未找到 1-15 之间的等级，可以尝试将 lux 映射到 1-15（可选）
+            # 这里不做 lux 到等级的自动映射，保持原状
+
+        results.append({"device": name, "status": status})
+
+    if not results:
+        return {"message": "No Hub devices found matching filter", "hubs_found": len(hubs)}
+    return results
+
+if __name__ == "__main__":
+    mcp.run()
