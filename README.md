@@ -19,7 +19,7 @@ This is an easy to use and deployable local AI assistant on your Windows PC, int
 
 ## Implemented MCP
 
-- SwitchBot devices control (An example)
+- [SwitchBot](https://github.com/OpenWonderLabs/SwitchBotAPI) devices control (An example)
 - Weather information query
 - Run local commands
 
@@ -89,8 +89,9 @@ Change model paths and config paths in kokoro and switchbot to your local paths 
 
 # References
 
-- [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR)
-- [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS)
-- [Kokoro](https://github.com/hexgrad/kokoro)
-- [Ollama](https://ollama.com/)
-- [MCP](https://github.com/modelcontextprotocol/python-sdk)
+- Qwen3-ASR: https://github.com/QwenLM/Qwen3-ASR
+- Qwen3-TTS: https://github.com/QwenLM/Qwen3-TTS
+- Kokoro: https://github.com/hexgrad/kokoro
+- Ollama: https://ollama.com/
+- MCP: https://github.com/modelcontextprotocol/python-sdk
+- SwitchBot: https://github.com/OpenWonderLabs/SwitchBotAPI
