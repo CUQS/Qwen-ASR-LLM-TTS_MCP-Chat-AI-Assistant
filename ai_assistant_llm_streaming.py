@@ -463,7 +463,13 @@ class AIAssistant(QWidget):
         threading.Thread(target=self._voice_pipeline, args=(audio_data,), daemon=True).start()
 
     def _voice_pipeline(self, audio_data: np.ndarray):
-        """语音对话全流程: ASR → LLM → TTS → 播放"""
+        """语音对话全流程: ASR → LLM(Streaming) → TTS → 播放
+        
+        三级流水线架构:
+          Thread-1: LLM streaming，遇到标点就拆句推入 sentence_queue
+          Thread-2: 从 sentence_queue 取句子，合成 TTS 音频推入 audio_chunk_queue
+          Thread-3: 从 audio_chunk_queue 取音频块，OutputStream 实时播放
+        """
         try:
             # --- 1) ASR: 语音转文字 ---
             self.comm.voice_status.emit("正在识别语音...")
@@ -493,167 +499,230 @@ class AIAssistant(QWidget):
             except Exception:
                 pass
 
-            response = self.client.chat(
-                model=MODEL_NAME,
-                messages=self.chat_history,
-                tools=self.tools,
-                keep_alive=-1
-            )
-            message = response.get('message', {})
+            # --- 2-b) LLM Streaming + 3) TTS 流式合成播放 ---
+            # 三级流水线: LLM streaming → sentence_queue → TTS → audio_chunk_queue → 播放
+            # 遇到标点就把已累积文本发给 TTS，无需等 LLM 生成完毕
 
-            # 处理工具调用
-            if message.get('tool_calls'):
-                self.chat_history.append(message)
-                for tool_call in message['tool_calls']:
-                    t_name = tool_call['function']['name']
-                    t_args = tool_call['function']['arguments']
-                    print(f"[MCP Action] 正在调用工具: {t_name} 参数: {t_args}")
-                    output = asyncio.run(self.call_mcp_tool(t_name, t_args))
-                    self.chat_history.append({'role': 'tool', 'content': str(output), 'name': t_name})
-                final_response = self.client.chat(model=MODEL_NAME, messages=self.chat_history)
-                ai_content = final_response['message']['content']
-                self.chat_history.append(final_response['message'])
-            else:
-                self.chat_history.append(message)
-                ai_content = message.get('content', '')
+            _split_punct = set('。！？；!?;\n，,、：:')
 
-            self.comm.append_chat.emit("AI", ai_content)
-            try:
-                web_broadcast("AI", ai_content)
-            except Exception:
-                pass
+            sentence_queue = queue.Queue()          # LLM → TTS
+            audio_chunk_queue = queue.Queue(maxsize=64)  # TTS → Player
+            SENTINEL = None
+            sr_holder = [None]
+            sr_ready = threading.Event()
+            full_content_holder = [""]              # 收集完整回复
 
-            # --- 3) TTS: 分句流式合成 + OutputStream 流式播放 ---
-            if ai_content.strip():
-                sentences = split_sentences_for_tts(ai_content, TTS_TOKEN_MAX_NUM)
-                print(f"[Voice TTS] 拆分为 {len(sentences)} 段: {sentences}")
-                if not sentences:
-                    return
+            # ---------- Thread-1: LLM Streaming → sentence_queue ----------
+            def _flush_buffer(buf):
+                """将 buffer 中的文本拆句后推入 sentence_queue，返回空串"""
+                if buf.strip():
+                    for s in split_sentences_for_tts(buf.strip(), TTS_TOKEN_MAX_NUM):
+                        sentence_queue.put(s)
+                        print(f"[LLM Stream] → TTS: {s}")
+                return ""
 
+            def _stream_response(stream_iter):
+                """从 streaming iterator 中读取 delta，遇到标点就拆句推入队列。
+                返回 (full_content, tool_calls_list)"""
+                buf = ""
+                full = ""
+                tc_list = []
+                for chunk in stream_iter:
+                    msg = chunk.get('message', {})
+                    # 收集 tool_calls
+                    if msg.get('tool_calls'):
+                        tc_list.extend(msg['tool_calls'])
+                    delta = msg.get('content', '')
+                    if not delta:
+                        continue
+                    buf += delta
+                    full += delta
+                    # 找 buffer 中最后一个标点位置
+                    last_punct = -1
+                    for i, ch in enumerate(buf):
+                        if ch in _split_punct:
+                            last_punct = i
+                    if last_punct >= 0:
+                        sentence = buf[:last_punct + 1].strip()
+                        buf = buf[last_punct + 1:]
+                        if sentence:
+                            for s in split_sentences_for_tts(sentence, TTS_TOKEN_MAX_NUM):
+                                sentence_queue.put(s)
+                                print(f"[LLM Stream] → TTS: {s}")
+                # 剩余 buffer
+                buf = _flush_buffer(buf)
+                return full, tc_list
+
+            def llm_streaming_producer():
+                try:
+                    # 第一轮 streaming（含 Tool 调用检测）
+                    stream1 = self.client.chat(
+                        model=MODEL_NAME,
+                        messages=self.chat_history,
+                        tools=self.tools,
+                        stream=True,
+                        keep_alive=-1,
+                    )
+                    content1, tool_calls = _stream_response(stream1)
+
+                    if tool_calls:
+                        # 记录模型的 tool_call 请求
+                        self.chat_history.append({
+                            'role': 'assistant',
+                            'content': content1,
+                            'tool_calls': tool_calls,
+                        })
+                        for tc in tool_calls:
+                            t_name = tc['function']['name']
+                            t_args = tc['function']['arguments']
+                            print(f"[MCP Action] 调用工具: {t_name} 参数: {t_args}")
+                            output = asyncio.run(self.call_mcp_tool(t_name, t_args))
+                            self.chat_history.append({
+                                'role': 'tool', 'content': str(output), 'name': t_name
+                            })
+
+                        # 第二轮 streaming（获取最终回复）
+                        stream2 = self.client.chat(
+                            model=MODEL_NAME,
+                            messages=self.chat_history,
+                            stream=True,
+                        )
+                        content2, _ = _stream_response(stream2)
+                        self.chat_history.append({'role': 'assistant', 'content': content2})
+                        full_content_holder[0] = content2
+                    else:
+                        # 普通对话，内容已在 streaming 过程中推入队列
+                        self.chat_history.append({'role': 'assistant', 'content': content1})
+                        full_content_holder[0] = content1
+                except Exception as e:
+                    print(f"[LLM Stream] 异常: {e}")
+                finally:
+                    sentence_queue.put(SENTINEL)  # 通知 TTS 生产者结束
+
+            # ---------- Thread-2: sentence_queue → TTS → audio_chunk_queue ----------
+            def tts_producer():
+                """从 sentence_queue 读取句子，合成 TTS，推入 audio_chunk_queue"""
+                CHUNK_SAMPLES = 4800  # 约 200ms @24kHz
                 tts_lang = TTS_LANGUAGE
-                # 音频块队列：存放 np.ndarray 片段，None 为结束哨兵
-                audio_chunk_queue = queue.Queue(maxsize=64)
-                SENTINEL = None
-                # 用于在回调与生产者之间传递采样率
-                sr_holder = [None]
-                sr_ready = threading.Event()
+                i = 0
+                while True:
+                    sentence = sentence_queue.get()
+                    if sentence is SENTINEL:
+                        break
+                    i += 1
+                    try:
+                        self.comm.voice_status.emit(f"正在合成语音 ({i})...")
+                        if TTS_ENGINE == "kokoro":
+                            def speed_callable(len_ps):
+                                speed = 0.8
+                                if len_ps <= 83:
+                                    speed = 1
+                                elif len_ps < 183:
+                                    speed = 1 - (len_ps - 83) / 500
+                                return speed * 1.5
+                            generator = self.kokoro_pipeline(
+                                sentence, voice=KOKORO_VOICE, speed=speed_callable,
+                            )
+                            result = next(generator)
+                            wav = result.audio
+                            if isinstance(wav, torch.Tensor):
+                                wav = wav.cpu().numpy()
+                            sr = KOKORO_SAMPLE_RATE
+                        else:
+                            wavs, sr = self.tts_model.generate_custom_voice(
+                                text=sentence,
+                                language=tts_lang,
+                                speaker=TTS_SPEAKER,
+                            )
+                            wav = wavs[0]
+                        # 首次拿到 sr 后通知播放线程
+                        if sr_holder[0] is None:
+                            sr_holder[0] = sr
+                            sr_ready.set()
+                        # 将整段音频切成小块推入队列
+                        offset = 0
+                        while offset < len(wav):
+                            chunk = wav[offset:offset + CHUNK_SAMPLES]
+                            audio_chunk_queue.put(chunk)
+                            offset += CHUNK_SAMPLES
+                        print(f"[Voice TTS] 合成完成 ({i}): {sentence}")
+                    except Exception as e:
+                        print(f"[Voice TTS] 合成第 {i} 段失败: {e}")
+                audio_chunk_queue.put(SENTINEL)
 
-                def tts_producer():
-                    """逐句合成 TTS，将音频按小块推入队列"""
-                    CHUNK_SAMPLES = 4800  # 约 200ms @24kHz
-                    for i, sentence in enumerate(sentences):
+            # ---------- Thread-3: audio_chunk_queue → OutputStream 播放 ----------
+            def audio_player():
+                """使用 sd.OutputStream 从队列流式播放音频"""
+                sr_ready.wait()
+                sr = sr_holder[0]
+                PLAYBACK_BLOCK = 1024
+
+                buffer = np.array([], dtype=np.float32)
+                finished = False
+
+                def callback(outdata, frames, time_info, status):
+                    nonlocal buffer, finished
+                    needed = frames
+                    while len(buffer) < needed and not finished:
                         try:
-                            self.comm.voice_status.emit(f"正在合成语音 ({i+1}/{len(sentences)})...")
-                            if TTS_ENGINE == "kokoro":
-                                # Kokoro TTS 合成
-                                def speed_callable(len_ps):
-                                    speed = 0.8
-                                    if len_ps <= 83:
-                                        speed = 1
-                                    elif len_ps < 183:
-                                        speed = 1 - (len_ps - 83) / 500
-                                    return speed * 1.5
-                                generator = self.kokoro_pipeline(
-                                    sentence, voice=KOKORO_VOICE, speed=speed_callable,
-                                )
-                                result = next(generator)
-                                wav = result.audio
-                                if isinstance(wav, torch.Tensor):
-                                    wav = wav.cpu().numpy()
-                                sr = KOKORO_SAMPLE_RATE
-                            else:
-                                # Qwen TTS 合成
-                                wavs, sr = self.tts_model.generate_custom_voice(
-                                    text=sentence,
-                                    language=tts_lang,
-                                    speaker=TTS_SPEAKER,
-                                )
-                                wav = wavs[0]
-                            # 首次拿到 sr 后通知播放线程
-                            if sr_holder[0] is None:
-                                sr_holder[0] = sr
-                                sr_ready.set()
-                            # 将整段音频切成小块推入队列
-                            offset = 0
-                            while offset < len(wav):
-                                chunk = wav[offset:offset + CHUNK_SAMPLES]
-                                audio_chunk_queue.put(chunk)
-                                offset += CHUNK_SAMPLES
-                            print(f"[Voice TTS] 合成完成 ({i+1}/{len(sentences)}): {sentence}")
-                        except Exception as e:
-                            print(f"[Voice TTS] 合成第 {i+1} 段失败: {e}")
-                    audio_chunk_queue.put(SENTINEL)
+                            chunk = audio_chunk_queue.get_nowait()
+                            if chunk is SENTINEL:
+                                finished = True
+                                break
+                            buffer = np.concatenate([buffer, chunk.astype(np.float32)])
+                        except queue.Empty:
+                            break
 
-                def audio_player():
-                    """使用 sd.OutputStream 从队列流式播放音频"""
-                    # 等待第一段合成完成以获取采样率
-                    sr_ready.wait()
-                    sr = sr_holder[0]
-                    PLAYBACK_BLOCK = 1024  # OutputStream 每次回调的帧数
+                    if len(buffer) >= needed:
+                        outdata[:, 0] = buffer[:needed]
+                        buffer = buffer[needed:]
+                    else:
+                        avail = len(buffer)
+                        outdata[:avail, 0] = buffer[:avail]
+                        outdata[avail:, 0] = 0.0
+                        buffer = np.array([], dtype=np.float32)
+                        if finished:
+                            raise sd.CallbackStop()
 
-                    # 播放缓冲区：用一个 deque 式的滚动 buffer
-                    buffer = np.array([], dtype=np.float32)
-                    finished = False  # 生产者是否已发送 SENTINEL
-
-                    def callback(outdata, frames, time_info, status):
-                        nonlocal buffer, finished
-                        needed = frames
-                        # 尝试从队列补充 buffer
-                        while len(buffer) < needed and not finished:
+                with sd.OutputStream(
+                    samplerate=sr, channels=1, dtype='float32',
+                    blocksize=PLAYBACK_BLOCK, callback=callback,
+                ) as stream:
+                    while stream.active:
+                        if not finished:
                             try:
-                                chunk = audio_chunk_queue.get_nowait()
+                                chunk = audio_chunk_queue.get(timeout=0.05)
                                 if chunk is SENTINEL:
                                     finished = True
-                                    break
-                                buffer = np.concatenate([buffer, chunk.astype(np.float32)])
+                                else:
+                                    buffer = np.concatenate([buffer, chunk.astype(np.float32)])
                             except queue.Empty:
-                                break
-
-                        if len(buffer) >= needed:
-                            outdata[:, 0] = buffer[:needed]
-                            buffer = buffer[needed:]
+                                pass
                         else:
-                            # buffer 不足，填充已有数据 + 静音
-                            avail = len(buffer)
-                            outdata[:avail, 0] = buffer[:avail]
-                            outdata[avail:, 0] = 0.0
-                            buffer = np.array([], dtype=np.float32)
-                            if finished:
-                                raise sd.CallbackStop()
+                            sd.sleep(50)
+                print("[Voice TTS] OutputStream 播放结束")
 
-                    with sd.OutputStream(
-                        samplerate=sr,
-                        channels=1,
-                        dtype='float32',
-                        blocksize=PLAYBACK_BLOCK,
-                        callback=callback,
-                    ) as stream:
-                        # 阻塞直到播放结束（CallbackStop 触发）
-                        while stream.active:
-                            # 在非回调线程中也帮忙填充 buffer，避免回调饥饿
-                            if not finished:
-                                try:
-                                    chunk = audio_chunk_queue.get(timeout=0.05)
-                                    if chunk is SENTINEL:
-                                        finished = True
-                                    else:
-                                        buffer = np.concatenate([buffer, chunk.astype(np.float32)])
-                                except queue.Empty:
-                                    pass
-                            else:
-                                # 生产完毕，等待播放线程排空 buffer
-                                sd.sleep(50)
-                    print("[Voice TTS] OutputStream 播放结束")
+            # 启动三级流水线
+            llm_thread = threading.Thread(target=llm_streaming_producer, daemon=True)
+            tts_thread = threading.Thread(target=tts_producer, daemon=True)
+            player_thread = threading.Thread(target=audio_player, daemon=True)
+            llm_thread.start()
+            tts_thread.start()
+            player_thread.start()
 
-                # 启动生产者和播放线程
-                producer_thread = threading.Thread(target=tts_producer, daemon=True)
-                player_thread = threading.Thread(target=audio_player, daemon=True)
-                producer_thread.start()
-                player_thread.start()
+            llm_thread.join()
+            # LLM 完毕，更新 UI 和 Web
+            ai_content = full_content_holder[0]
+            if ai_content:
+                self.comm.append_chat.emit("AI", ai_content)
+                try:
+                    web_broadcast("AI", ai_content)
+                except Exception:
+                    pass
 
-                producer_thread.join()
-                player_thread.join()
-                self.comm.voice_status.emit("语音播放完毕。")
+            tts_thread.join()
+            player_thread.join()
+            self.comm.voice_status.emit("语音播放完毕。")
 
         except Exception as e:
             self.comm.voice_status.emit(f"语音处理异常: {e}")

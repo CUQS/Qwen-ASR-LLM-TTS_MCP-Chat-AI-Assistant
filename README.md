@@ -1,6 +1,32 @@
 # Qwen3-ASR-LLM-TTS_MCP-Chat-AI-Assistant
 
-![Demo](demo.png)
+This is an easy to use and deployable local AI assistant on your Windows PC, integrating [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR) for speech recognition, [Ollama](https://ollama.com/) [Qwen3-30B-A3B-Instruct-2507](https://ollama.com/dengcao/Qwen3-30B-A3B-Instruct-2507) for LLM, [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) or [Kokoro](https://github.com/hexgrad/kokoro) for text-to-speech synthesis, and [MCP](https://github.com/modelcontextprotocol/python-sdk) for device control.
+
+## Features
+
+- High-accuracy speech recognition with Qwen3-ASR
+- Powerful language understanding and generation with Qwen3-30B-A3B-Instruct-2507
+- Natural and expressive speech synthesis with Qwen3-TTS or Kokoro
+- Seamless integration with MCP for smart device control
+- Real-time voice interaction with streaming LLM and TTS
+- Customizable and extensible architecture
+- Open-source and free to use
+- Lightweight and efficient implementation (RTX 3090 24GB GPU)
+- User-friendly GUI with web interface and PyQt6 desktop debug app
+
+## Implemented MCP
+
+- SwitchBot devices control (An example)
+- Weather information query
+- Run local commands
+
+## Demo
+
+<img src="demo.png" alt="PC Demo" width="1080"/>
+
+- Using Tailscale to access the web GUI remotely from your phone.
+
+<img src="demo_phone.jpg" alt="Phone Demo" width="200"/>
 
 # ENV
 
@@ -42,3 +68,11 @@ uv pip install sounddevice
 uv pip install PyQt6 ollama keyboard mcp
 uv pip install flask_socketio
 ```
+
+# References
+
+- [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR)
+- [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS)
+- [Kokoro](https://github.com/hexgrad/kokoro)
+- [Ollama](https://ollama.com/)
+- [MCP](https://github.com/modelcontextprotocol/python-sdk)
