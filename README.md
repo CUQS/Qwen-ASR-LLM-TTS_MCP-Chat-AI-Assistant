@@ -72,6 +72,21 @@ uv pip install PyQt6 ollama keyboard mcp
 uv pip install flask_socketio
 ```
 
+# Usage
+
+```bash
+python ai_assistant.py
+```
+
+- Open your web browser and go to `http://localhost:5100` to access the AI assistant web interface.
+- Press `Ctrl + Alt + Q` to open PyQt6 debug app.
+- Press and hold `Ctrl + Alt + A` to speak to the AI assistant.
+- Press `Ctrl + Alt + E` to Quit.
+
+# Notice
+
+Change model paths and config paths in kokoro and switchbot to your local paths before running.
+
 # References
 
 - [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR)
