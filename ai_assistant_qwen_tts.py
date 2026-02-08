@@ -21,7 +21,6 @@ import html
 # --- ASR / TTS ---
 from qwen_asr import Qwen3ASRModel
 from qwen_tts import Qwen3TTSModel
-from kokoro import KModel, KPipeline
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -34,21 +33,13 @@ from server import set_assistant, start_server as start_web_server, broadcast_me
 REMOTE_OLLAMA_HOST = "http://192.168.40.12:11434" 
 MODEL_NAME = "dengcao/Qwen3-30B-A3B-Instruct-2507"
 
-# TTS 引擎选择: "qwen" 或 "kokoro"
-TTS_ENGINE = "kokoro"  # 设为 "kokoro" 可使用 Kokoro TTS
-
 # ASR / TTS 模型配置
 ASR_MODEL_ID = "Qwen/Qwen3-ASR-0.6B"
 TTS_MODEL_ID = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
 TTS_SPEAKER = "Serena"
 TTS_LANGUAGE = "Chinese"
-TTS_TOKEN_MAX_NUM = 100  # TTS 单句最大字符数，超过则继续拆分
+TTS_TOKEN_MAX_NUM = 30  # TTS 单句最大字符数，超过则继续拆分
 RECORD_SAMPLE_RATE = 16000  # ASR 要求 16kHz
-
-# Kokoro TTS 配置
-KOKORO_REPO_ID = 'hexgrad/Kokoro-82M-v1.1-zh'
-KOKORO_SAMPLE_RATE = 24000
-KOKORO_VOICE = 'zf_001'  # zf_001 女声, zm_010 男声
 
 # --- 句子拆分工具 ---
 _PUNCT_PATTERN = re.compile(r'(?<=[。！？；\n!\?;])')
@@ -131,8 +122,6 @@ class AIAssistant(QWidget):
         # --- ASR / TTS 模型（延迟加载） ---
         self.asr_model = None
         self.tts_model = None
-        self.kokoro_model = None
-        self.kokoro_pipeline = None
         self._models_loaded = False
         self._models_loading = False
 
@@ -387,26 +376,13 @@ class AIAssistant(QWidget):
                 )
                 print("[Voice] ASR 模型加载完成")
 
-                if TTS_ENGINE == "kokoro":
-                    print("[Voice] 开始加载 Kokoro TTS 模型...")
-                    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-                    self.kokoro_model = KModel(repo_id=KOKORO_REPO_ID).to(device).eval()
-                    en_pipeline = KPipeline(lang_code='a', repo_id=KOKORO_REPO_ID, model=False)
-                    def en_callable(text):
-                        return next(en_pipeline(text)).phonemes
-                    self.kokoro_pipeline = KPipeline(
-                        lang_code='z', repo_id=KOKORO_REPO_ID,
-                        model=self.kokoro_model, en_callable=en_callable,
-                    )
-                    print("[Voice] Kokoro TTS 模型加载完成")
-                else:
-                    print("[Voice] 开始加载 Qwen TTS 模型...")
-                    self.tts_model = Qwen3TTSModel.from_pretrained(
-                        TTS_MODEL_ID,
-                        device_map="cuda:0",
-                        dtype=torch.bfloat16,
-                    )
-                    print("[Voice] Qwen TTS 模型加载完成")
+                print("[Voice] 开始加载 TTS 模型...")
+                self.tts_model = Qwen3TTSModel.from_pretrained(
+                    TTS_MODEL_ID,
+                    device_map="cuda:0",
+                    dtype=torch.bfloat16,
+                )
+                print("[Voice] TTS 模型加载完成")
 
                 self._models_loaded = True
                 self.comm.voice_status.emit("ASR / TTS 模型加载完毕，可以使用语音对话了。")
@@ -544,31 +520,12 @@ class AIAssistant(QWidget):
                     for i, sentence in enumerate(sentences):
                         try:
                             self.comm.voice_status.emit(f"正在合成语音 ({i+1}/{len(sentences)})...")
-                            if TTS_ENGINE == "kokoro":
-                                # Kokoro TTS 合成
-                                def speed_callable(len_ps):
-                                    speed = 0.8
-                                    if len_ps <= 83:
-                                        speed = 1
-                                    elif len_ps < 183:
-                                        speed = 1 - (len_ps - 83) / 500
-                                    return speed * 1.5
-                                generator = self.kokoro_pipeline(
-                                    sentence, voice=KOKORO_VOICE, speed=speed_callable,
-                                )
-                                result = next(generator)
-                                wav = result.audio
-                                if isinstance(wav, torch.Tensor):
-                                    wav = wav.cpu().numpy()
-                                sr = KOKORO_SAMPLE_RATE
-                            else:
-                                # Qwen TTS 合成
-                                wavs, sr = self.tts_model.generate_custom_voice(
-                                    text=sentence,
-                                    language=tts_lang,
-                                    speaker=TTS_SPEAKER,
-                                )
-                                wav = wavs[0]
+                            wavs, sr = self.tts_model.generate_custom_voice(
+                                text=sentence,
+                                language=tts_lang,
+                                speaker=TTS_SPEAKER,
+                            )
+                            wav = wavs[0]
                             # 首次拿到 sr 后通知播放线程
                             if sr_holder[0] is None:
                                 sr_holder[0] = sr

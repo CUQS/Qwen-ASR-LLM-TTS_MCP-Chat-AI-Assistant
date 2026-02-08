@@ -1,3 +1,7 @@
+# Qwen3-ASR-LLM-TTS_MCP-Chat-AI-Assistant
+
+![Demo](demo.png)
+
 # ENV
 
 ```bash
@@ -20,13 +24,21 @@ cd ./Qwen3-ASR
 uv pip install -e .
 
 # for tts
-uv pip install einops
-uv pip install onnxruntime
-uv pip install torchaudio
+uv pip install einops onnxruntime torchaudio
 cd ./Qwen3-TTS/
 uv pip install -e .
 
+# kokoro
+uv pip install pip  # !!
+uv pip install loguru
+uv pip install misaki[zh]>=0.9.4
+uv pip install num2words spacy phonemizer espeakng_loader
+cd ./kokoro
+uv pip install -e .
+
 # ai assistant
+uv pip install requests beautifulsoup4
+uv pip install sounddevice
 uv pip install PyQt6 ollama keyboard mcp
 uv pip install flask_socketio
 ```

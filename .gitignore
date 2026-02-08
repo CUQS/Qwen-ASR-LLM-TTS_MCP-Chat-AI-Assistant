@@ -85,7 +85,11 @@ node_modules/
 # other projects
 asr/Qwen3-ASR/
 tts/Qwen3-TTS/
+tts/weights/
+tts/kokoro/
 tts/*.wav
+/*.wav
+debug.py
 
 # personal settings
 switchbot/devices_list.json
