@@ -1,6 +1,6 @@
 # Qwen3-ASR-LLM-TTS_MCP-Chat-AI-Assistant
 
-This is an easy to use and deployable local AI assistant on your Windows PC, integrating [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR) for speech recognition, [Ollama](https://ollama.com/) [Qwen3-30B-A3B-Instruct-2507](https://ollama.com/dengcao/Qwen3-30B-A3B-Instruct-2507) for LLM, [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) or [Kokoro](https://github.com/hexgrad/kokoro) for text-to-speech synthesis, and [MCP](https://github.com/modelcontextprotocol/python-sdk) for device control.
+This is an easy to use and deployable multilingual local AI assistant on your Windows PC, integrating [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR) for speech recognition, [Ollama](https://ollama.com/) [Qwen3-30B-A3B-Instruct-2507](https://ollama.com/dengcao/Qwen3-30B-A3B-Instruct-2507) for LLM, [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) or [Kokoro](https://github.com/hexgrad/kokoro) for text-to-speech synthesis, and [MCP](https://github.com/modelcontextprotocol/python-sdk) for device control.
 
 ## Features
 
