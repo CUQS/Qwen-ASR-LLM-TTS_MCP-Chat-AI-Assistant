@@ -132,18 +132,52 @@ python ai_assistant.py
 
 ## 🖱️ Windows Quick Start
 
-For convenience, two click-to-run scripts are included at the repository root: `run_ai_assistant.bat` and `run_ai_assistant.ps1`.
+For convenience, a PowerShell launcher `run_ai_assistant.ps1` and a helper script `create_desktop_shortcut.ps1` are provided to quickly launch the AI assistant and to create a desktop shortcut.
 
-- `run_ai_assistant.bat`: double-click to run. It will try to activate a local `.venv`/`venv` if present, otherwise runs with system Python. You can pass an uv environment name to use `uv.ps1` (e.g. `run_ai_assistant.bat dev`) to activate `D:\uv_venv\dev`.
+- Run `run_ai_assistant.ps1` directly when you want to launch the assistant in a PowerShell session. Example:
 
-  - 中文：双击运行，优先激活仓库内的 `.venv` / `venv`；可在命令行传入 uv 环境名（例如 `run_ai_assistant.bat dev`）以通过 `uv.ps1` 激活 `D:\uv_venv` 下指定环境。
+```powershell
+# Launch and activate a named uv environment (optional)
+.\run_ai_assistant.ps1 -EnvName dev
+```
 
-- `run_ai_assistant.ps1`: PowerShell launcher. Use `.
-un_ai_assistant.ps1 -EnvName dev` to activate a named `D:\uv_venv` environment. Adjust execution policy if needed: `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser`.
+- Create a Desktop shortcut automatically (recommended):
 
-  - 中文：PowerShell 启动器，支持 `-EnvName` 参数，用于激活 `D:\uv_venv\<env>`；若受限请运行 `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser`。
+```powershell
+# In repository folder, create a desktop shortcut that points to the PowerShell launcher
+.\create_desktop_shortcut.ps1 -ShortcutName "AI Assistant"
+# Or create a shortcut that invokes the .bat wrapper instead
+.\create_desktop_shortcut.ps1 -ShortcutName "AI Assistant (bat)" -UseBat
+```
 
-Note: The scripts keep the console open after exit so you can review logs.
+- Manual shortcut target (if you prefer to create it by hand):
+
+```
+C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "D:\mcp\run_ai_assistant.ps1"
+```
+
+中文：
+
+- `run_ai_assistant.ps1`：PowerShell 启动器，用法示例：
+
+```powershell
+.\run_ai_assistant.ps1 -EnvName dev
+```
+
+- 自动创建桌面快捷方式（推荐）：运行仓库中的 `create_desktop_shortcut.ps1`：
+
+```powershell
+.\create_desktop_shortcut.ps1 -ShortcutName "AI Assistant"
+.\create_desktop_shortcut.ps1 -ShortcutName "AI Assistant (bat)" -UseBat
+```
+
+- 手动创建快捷方式的目标命令：
+
+```
+C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "D:\mcp\run_ai_assistant.ps1"
+```
+
+Note: After creating the desktop shortcut you can right-click it to pin to Start or Taskbar. If you want an automated step to pin the shortcut to taskbar, I can add an optional script (requires elevation).
 
 ---
 
