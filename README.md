@@ -4,6 +4,9 @@ This is an easy to use and deployable local AI assistant on your Windows PC, int
 
 ## Features
 
+- Multilingual speech recognition (Chinese/English/Japanese/Korean) with Qwen3-ASR
+- Multimodal language understanding and generation with Qwen3-30B-A3B-Instruct-2507
+- Multilingual speech synthesis (Chinese, English, Japanese...) with Qwen3-TTS or Kokoro
 - High-accuracy speech recognition with Qwen3-ASR
 - Powerful language understanding and generation with Qwen3-30B-A3B-Instruct-2507
 - Natural and expressive speech synthesis with Qwen3-TTS or Kokoro
