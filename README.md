@@ -1,98 +1,149 @@
-# Qwen3-ASR-LLM-TTS_MCP-Chat-AI-Assistant
+<div align="center">
 
-This is an easy to use and deployable multilingual local AI assistant on your Windows PC, integrating [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR) for speech recognition, [Ollama](https://ollama.com/) [Qwen3-30B-A3B-Instruct-2507](https://ollama.com/dengcao/Qwen3-30B-A3B-Instruct-2507) for LLM, [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) or [Kokoro](https://github.com/hexgrad/kokoro) for text-to-speech synthesis, and [MCP](https://github.com/modelcontextprotocol/python-sdk) for device control.
+# Qwen3-ASR-LLM-TTS & MCP Chat AI Assistant
 
-## Features
+**A fully local, multilingual voice AI assistant for your Windows PC**
 
-- Multilingual speech recognition (Chinese, English, Japanese...) with Qwen3-ASR
-- Multimodal language understanding and generation with Qwen3-30B-A3B-Instruct-2507
-- Multilingual speech synthesis (Chinese, English, Japanese...) with Qwen3-TTS or Kokoro
-- High-accuracy speech recognition with Qwen3-ASR
-- Powerful language understanding and generation with Qwen3-30B-A3B-Instruct-2507
-- Natural and expressive speech synthesis with Qwen3-TTS or Kokoro
-- Seamless integration with MCP for smart device control
-- Real-time voice interaction with streaming LLM and TTS
-- Customizable and extensible architecture
-- Open-source and free to use
-- Lightweight and efficient implementation (RTX 3090 24GB GPU)
-- User-friendly GUI with web interface and PyQt6 desktop debug app
+[![Python 3.12](https://img.shields.io/badge/Python-3.12-blue?logo=python&logoColor=white)](https://www.python.org/)
+[![CUDA 12.8](https://img.shields.io/badge/CUDA-12.8-green?logo=nvidia&logoColor=white)](https://developer.nvidia.com/cuda-toolkit)
+[![License](https://img.shields.io/badge/License-Open%20Source-brightgreen)](#)
 
-## Implemented MCP
+</div>
 
-- [SwitchBot](https://github.com/OpenWonderLabs/SwitchBotAPI) devices control (An example)
-- Weather information query
-- Run local commands
+---
 
-## Demo
+> An easy-to-deploy multilingual AI assistant integrating
+> [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR) for speech recognition,
+> [Ollama](https://ollama.com/) + [Qwen3-30B-A3B](https://ollama.com/dengcao/Qwen3-30B-A3B-Instruct-2507) for LLM,
+> [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) / [Kokoro](https://github.com/hexgrad/kokoro) for speech synthesis,
+> and [MCP](https://github.com/modelcontextprotocol/python-sdk) for smart device control.
+
+---
+
+## ✨ Features
+
+| Category | Highlights |
+|---|---|
+| **Speech Recognition** | Multilingual (Chinese / English / Japanese …) via Qwen3-ASR |
+| **Language Model** | Powered by Qwen3-30B-A3B-Instruct-2507 through Ollama |
+| **Speech Synthesis** | Natural & expressive TTS with Qwen3-TTS or Kokoro |
+| **Smart Control** | MCP integration for IoT / smart device control |
+| **Interaction** | Real-time streaming LLM + TTS voice conversation |
+| **Interface** | Web UI + PyQt6 desktop debug app |
+| **Hardware** | Runs on a single RTX 3090 24 GB GPU |
+
+## 🔌 Implemented MCP Tools
+
+| Tool | Description |
+|---|---|
+| [SwitchBot](https://github.com/OpenWonderLabs/SwitchBotAPI) | Smart home device control (example integration) |
+| Weather | Real-time weather information query |
+| Local Commands | Execute local system commands |
+
+## 🖼️ Demo
+
+<summary><b>Desktop Web UI</b></summary>
 
 <img src="demo.png" alt="PC Demo" width="1080"/>
 
-- Using [Tailscale](https://tailscale.com/) to access the web GUI remotely from your phone.
+<summary><b>Mobile (via Tailscale)</b></summary>
+
+Access the web GUI remotely from your phone using [Tailscale](https://tailscale.com/).
 
 <img src="demo_phone.jpg" alt="Phone Demo" width="200"/>
 
-# ENV
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+- **OS:** Windows 10 / 11
+- **GPU:** NVIDIA RTX 3090 (24 GB) or above
+- **Python:** 3.12
+- **Package Manager:** [uv](https://github.com/astral-sh/uv)
+
+### 1. Create Environment
 
 ```bash
 uv venv qwen-asr --python 3.12
+```
+
+### 2. Install Core Dependencies
+
+```bash
+# PyTorch + CUDA
 uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+
+# Flash Attention (prebuilt wheel)
 uv pip install --no-deps https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.7.13/flash_attn-2.8.3+cu128torch2.10-cp312-cp312-win_amd64.whl
 
-uv pip install transformers==4.57.
-uv pip install nagisa==0.2.11 
-uv pip install soynlp==0.0.493
-uv pip install qwen-omni-utils
+# Transformers & utilities
+uv pip install transformers==4.57. nagisa==0.2.11 soynlp==0.0.493 qwen-omni-utils
+uv pip install sox flask pytz accelerate==1.12.0
+```
 
-uv pip install sox
-uv pip install flask
-uv pip install pytz
+### 3. Install ASR
 
-uv pip install accelerate==1.12.0
-
+```bash
 cd ./Qwen3-ASR
 uv pip install -e .
+```
 
-# for tts
+### 4. Install TTS
+
+```bash
+# Qwen3-TTS
 uv pip install einops onnxruntime torchaudio
 cd ./Qwen3-TTS/
 uv pip install -e .
 
-# kokoro
-uv pip install pip  # !!
-uv pip install loguru
-uv pip install misaki[zh]>=0.9.4
+# Kokoro
+uv pip install pip  # required first!
+uv pip install loguru "misaki[zh]>=0.9.4"
 uv pip install num2words spacy phonemizer espeakng_loader
 cd ./kokoro
 uv pip install -e .
-
-# ai assistant
-uv pip install requests beautifulsoup4
-uv pip install sounddevice
-uv pip install PyQt6 ollama keyboard mcp
-uv pip install flask_socketio
 ```
 
-# Usage
+### 5. Install AI Assistant
+
+```bash
+uv pip install requests beautifulsoup4 sounddevice
+uv pip install PyQt6 ollama keyboard mcp flask_socketio
+```
+
+---
+
+## 🎮 Usage
 
 ```bash
 python ai_assistant.py
 ```
 
-- Open your web browser and go to `http://localhost:5100` to access the AI assistant web interface.
-- Press `Ctrl + Alt + Q` to open PyQt6 debug app.
-- Press and hold `Ctrl + Alt + A` to speak to the AI assistant.
-- Press `Ctrl + Alt + E` to Quit.
+| Shortcut | Action |
+|---|---|
+| — | Open browser → `http://localhost:5100` |
+| `Ctrl + Alt + Q` | Open PyQt6 debug app |
+| `Ctrl + Alt + A` (hold) | Push-to-talk |
+| `Ctrl + Alt + E` | Quit |
 
-# Notice
+---
 
-Change model paths and config paths in kokoro and switchbot to your local paths before running.
+## ⚠️ Notice
 
-# References
+> Before running, update model paths and config paths in **kokoro** and **switchbot** to match your local setup.
 
-- Kokoro: https://github.com/hexgrad/kokoro
-- MCP: https://github.com/modelcontextprotocol/python-sdk
-- Ollama: https://ollama.com/
-- Qwen3-ASR: https://github.com/QwenLM/Qwen3-ASR
-- Qwen3-TTS: https://github.com/QwenLM/Qwen3-TTS
-- SwitchBot: https://github.com/OpenWonderLabs/SwitchBotAPI
-- Tailscale: https://tailscale.com/
+---
+
+## 📚 References
+
+| Project | Link |
+|---|---|
+| Kokoro | <https://github.com/hexgrad/kokoro> |
+| MCP Python SDK | <https://github.com/modelcontextprotocol/python-sdk> |
+| Ollama | <https://ollama.com/> |
+| Qwen3-ASR | <https://github.com/QwenLM/Qwen3-ASR> |
+| Qwen3-TTS | <https://github.com/QwenLM/Qwen3-TTS> |
+| SwitchBot API | <https://github.com/OpenWonderLabs/SwitchBotAPI> |
+| Tailscale | <https://tailscale.com/> |
