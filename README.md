@@ -130,6 +130,23 @@ python ai_assistant.py
 
 ---
 
+## 🖱️ Windows Quick Start
+
+For convenience, two click-to-run scripts are included at the repository root: `run_ai_assistant.bat` and `run_ai_assistant.ps1`.
+
+- `run_ai_assistant.bat`: double-click to run. It will try to activate a local `.venv`/`venv` if present, otherwise runs with system Python. You can pass an uv environment name to use `uv.ps1` (e.g. `run_ai_assistant.bat dev`) to activate `D:\uv_venv\dev`.
+
+  - 中文：双击运行，优先激活仓库内的 `.venv` / `venv`；可在命令行传入 uv 环境名（例如 `run_ai_assistant.bat dev`）以通过 `uv.ps1` 激活 `D:\uv_venv` 下指定环境。
+
+- `run_ai_assistant.ps1`: PowerShell launcher. Use `.
+un_ai_assistant.ps1 -EnvName dev` to activate a named `D:\uv_venv` environment. Adjust execution policy if needed: `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser`.
+
+  - 中文：PowerShell 启动器，支持 `-EnvName` 参数，用于激活 `D:\uv_venv\<env>`；若受限请运行 `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser`。
+
+Note: The scripts keep the console open after exit so you can review logs.
+
+---
+
 ## ⚠️ Notice
 
 > Before running, update model paths and config paths in **kokoro** and **switchbot** to match your local setup.
