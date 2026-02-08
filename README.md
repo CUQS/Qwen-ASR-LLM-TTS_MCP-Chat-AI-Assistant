@@ -39,6 +39,8 @@
 | [SwitchBot](https://github.com/OpenWonderLabs/SwitchBotAPI) | Smart home device control (example integration) |
 | Weather | Real-time weather information query |
 | Local Commands | Execute local system commands |
+| Current Time | Return current time in ISO, human-readable format and Unix timestamp (supports optional IANA timezone parameter) |
+| Open Website | Open an http/https URL in the default browser (returns success/failure information) |
 
 ## 🖼️ Demo
 
