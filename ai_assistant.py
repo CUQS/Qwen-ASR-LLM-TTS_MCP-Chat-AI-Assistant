@@ -331,6 +331,14 @@ class AIAssistant(QWidget):
 
                     output = asyncio.run(self.call_mcp_tool(t_name, t_args))
 
+                    # 特殊处理：当工具为 clear_chat 时，在本地清空对话并向用户展示通知
+                    try:
+                        if t_name == 'clear_chat':
+                            self.reset_chat()
+                            self.comm.append_chat.emit("System", "对话已被清空（由工具触发）。")
+                    except Exception as e:
+                        print(f"[MCP Action] 清空对话失败: {e}")
+
                     self.chat_history.append({
                         'role': 'tool', 
                         'content': str(output), 
@@ -509,6 +517,13 @@ class AIAssistant(QWidget):
                     t_args = tool_call['function']['arguments']
                     print(f"[MCP Action] 正在调用工具: {t_name} 参数: {t_args}")
                     output = asyncio.run(self.call_mcp_tool(t_name, t_args))
+                    # 特殊处理：当工具为 clear_chat 时，在本地清空对话并向用户展示通知
+                    try:
+                        if t_name == 'clear_chat':
+                            self.reset_chat()
+                            self.comm.append_chat.emit("System", "对话已被清空（由工具触发）。")
+                    except Exception as e:
+                        print(f"[MCP Action] 清空对话失败: {e}")
                     self.chat_history.append({'role': 'tool', 'content': str(output), 'name': t_name})
                 final_response = self.client.chat(model=MODEL_NAME, messages=self.chat_history)
                 ai_content = final_response['message']['content']

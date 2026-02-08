@@ -259,5 +259,24 @@ def open_website(url: str, open_in_new: bool = True):
         return {"error": str(e)}
 
 
+@mcp.tool(
+    name="clear_chat",
+    description="清空 AI 助手的当前聊天记录（当模型主动调用此工具时）",
+)
+def clear_chat(confirm: bool = True):
+    """请求清空当前聊天。
+
+    参数：
+      - confirm: 布尔，是否确认清空（默认为 True）。
+
+    返回：
+      dict，例如 {"cleared": True, "message": "Chat cleared"} 或 {"error": str}
+    """
+    if not confirm:
+        return {"cleared": False, "message": "Confirmation required"}
+    # 该工具仅返回结果；实际的 GUI/助手进程会在收到该工具调用结果后执行清空操作。
+    return {"cleared": True, "message": "Chat cleared"}
+
+
 if __name__ == "__main__":
     mcp.run()
