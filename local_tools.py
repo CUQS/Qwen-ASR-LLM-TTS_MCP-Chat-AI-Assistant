@@ -5,6 +5,8 @@ from get_weather.get_weather import get_yahoo_weather
 
 mcp = FastMCP("MyLocalHelper")
 
+
+
 @mcp.tool(
     name="read_directory",
     description="获取所给路径的文件列表",
@@ -192,6 +194,70 @@ def get_switchbot_hub2_info(names=None):
     if not results:
         return {"message": "No Hub devices found matching filter", "hubs_found": len(hubs)}
     return results
+
+
+@mcp.tool(
+    name="get_current_time",
+    description="返回当前时间，包含 ISO 格式、本地可读格式与 Unix 时间戳。可选参数 tz（例如 'Asia/Tokyo'）来指定时区。",
+)
+def get_current_time(tz: str = None):
+    """返回当前时间的信息。
+
+    参数:
+      - tz: 可选的时区字符串（IANA 时区，例如 'Asia/Tokyo'）。如果未提供则使用本地时区。
+
+    返回:
+      dict: {"iso": str, "readable": str, "timestamp": int} 或 {"error": str}
+    """
+    from datetime import datetime
+    try:
+        if tz:
+            try:
+                from zoneinfo import ZoneInfo
+                dt = datetime.now(ZoneInfo(tz))
+            except Exception as e:
+                return {"error": f"Invalid timezone '{tz}': {e}"}
+        else:
+            dt = datetime.now().astimezone()
+        iso = dt.isoformat()
+        readable = dt.strftime("%Y-%m-%d %H:%M:%S %Z%z")
+        ts = int(dt.timestamp())
+        return {"iso": iso, "readable": readable, "timestamp": ts}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+
+@mcp.tool(
+    name="open_website",
+    description="在默认浏览器中打开给定网址（仅支持 http/https），返回操作结果。",
+)
+def open_website(url: str, open_in_new: bool = True):
+    """在默认浏览器中打开 URL。
+
+    参数：
+      - url: 要打开的 URL（必须以 http:// 或 https:// 开头）
+      - open_in_new: 是否在新标签/窗口中打开（默认为 True）
+
+    返回：
+      dict，格式例如 {"url":str, "opened":bool, "message":str} 或 {"error":str}
+    """
+    from urllib.parse import urlparse
+    import webbrowser
+
+    if not url:
+        return {"error": "No URL provided"}
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return {"error": f"Invalid URL or unsupported scheme: {url}"}
+
+    try:
+        new = 2 if open_in_new else 0
+        success = webbrowser.open(url, new=new)
+        return {"url": url, "opened": bool(success), "message": "Opened in browser" if success else "Browser call returned False"}
+    except Exception as e:
+        return {"error": str(e)}
+
 
 if __name__ == "__main__":
     mcp.run()
