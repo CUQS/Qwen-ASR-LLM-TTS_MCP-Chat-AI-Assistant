@@ -728,6 +728,213 @@ class AIAssistant(QWidget):
             self.comm.voice_status.emit(f"语音处理异常: {e}")
             print(f"[Voice] 异常: {e}")
 
+    # ==================== Web 端语音对话 ====================
+
+    def web_voice_pipeline(self, audio_bytes, emit_fn):
+        """Web 端语音对话全流程: ASR → LLM(Streaming) → TTS → 流式推送音频到浏览器
+
+        emit_fn(event, data): 向指定 Web 客户端发送 Socket.IO 事件
+        Events:
+            voice_status:      {"status": str, "message": str}
+            voice_asr_result:  {"text": str}
+            voice_audio_start: {"sampleRate": int}
+            voice_audio_chunk: bytes (PCM float32)
+            voice_audio_end:   {}
+        """
+        try:
+            if not self._models_loaded:
+                emit_fn("voice_status", {"status": "error", "message": "语音模型尚未加载完成，请稍后再试"})
+                return
+
+            # --- 1) 解码 PCM → ASR ---
+            audio_data = np.frombuffer(audio_bytes, dtype=np.float32)
+            if len(audio_data) < RECORD_SAMPLE_RATE * 0.3:  # 不足 0.3 秒
+                emit_fn("voice_status", {"status": "done", "message": "录音时间太短"})
+                return
+
+            emit_fn("voice_status", {"status": "asr", "message": "正在识别语音..."})
+
+            tmp_wav = os.path.join(tempfile.gettempdir(), "_web_voice_input.wav")
+            sf.write(tmp_wav, audio_data, RECORD_SAMPLE_RATE)
+
+            results = self.asr_model.transcribe(audio=tmp_wav, language=None)
+            user_text = results[0].text.strip()
+            print(f"[Web Voice ASR] 文字={user_text}")
+
+            if not user_text:
+                emit_fn("voice_status", {"status": "done", "message": "未识别到有效语音"})
+                return
+
+            emit_fn("voice_asr_result", {"text": user_text})
+
+            # 广播用户消息到 PyQt 和 Web
+            self.comm.append_chat.emit("Me 🎤", user_text)
+            try:
+                web_broadcast("Me 🎤", user_text)
+            except Exception:
+                pass
+
+            # --- 2) LLM Streaming + TTS → 流式推送音频 ---
+            emit_fn("voice_status", {"status": "llm", "message": "AI 思考中..."})
+
+            llm_input = user_text + "\n（回复中尽量不要出现特殊符号，用文字表述便于朗读）"
+            self.chat_history.append({'role': 'user', 'content': llm_input})
+
+            _split_punct = set('。！？；!?;\n，,、：:')
+            sentence_queue = queue.Queue()
+            SENTINEL = None
+            full_content_holder = [""]
+            sr_sent = [False]
+
+            # --- Thread-1: LLM Streaming → sentence_queue ---
+            def _flush_buffer(buf):
+                if buf.strip():
+                    for s in split_sentences_for_tts(buf.strip(), TTS_TOKEN_MAX_NUM):
+                        sentence_queue.put(s)
+                        print(f"[Web LLM Stream] → TTS: {s}")
+                return ""
+
+            def _stream_response(stream_iter):
+                buf = ""
+                full = ""
+                tc_list = []
+                for chunk in stream_iter:
+                    msg = chunk.get('message', {})
+                    if msg.get('tool_calls'):
+                        tc_list.extend(msg['tool_calls'])
+                    delta = msg.get('content', '')
+                    if not delta:
+                        continue
+                    buf += delta
+                    full += delta
+                    last_punct = -1
+                    for i, ch in enumerate(buf):
+                        if ch in _split_punct:
+                            last_punct = i
+                    if last_punct >= 0:
+                        sentence = buf[:last_punct + 1].strip()
+                        buf = buf[last_punct + 1:]
+                        if sentence:
+                            for s in split_sentences_for_tts(sentence, TTS_TOKEN_MAX_NUM):
+                                sentence_queue.put(s)
+                                print(f"[Web LLM Stream] → TTS: {s}")
+                buf = _flush_buffer(buf)
+                return full, tc_list
+
+            def llm_streaming_producer():
+                try:
+                    stream1 = self.client.chat(
+                        model=MODEL_NAME,
+                        messages=self.chat_history,
+                        tools=self.tools,
+                        stream=True,
+                        keep_alive=-1,
+                    )
+                    content1, tool_calls = _stream_response(stream1)
+
+                    if tool_calls:
+                        self.chat_history.append({
+                            'role': 'assistant',
+                            'content': content1,
+                            'tool_calls': tool_calls,
+                        })
+                        for tc in tool_calls:
+                            t_name = tc['function']['name']
+                            t_args = tc['function']['arguments']
+                            print(f"[Web MCP Action] 调用工具: {t_name} 参数: {t_args}")
+                            output = asyncio.run(self.call_mcp_tool(t_name, t_args))
+                            self.chat_history.append({
+                                'role': 'tool', 'content': str(output), 'name': t_name
+                            })
+                        stream2 = self.client.chat(
+                            model=MODEL_NAME,
+                            messages=self.chat_history,
+                            stream=True,
+                        )
+                        content2, _ = _stream_response(stream2)
+                        self.chat_history.append({'role': 'assistant', 'content': content2})
+                        full_content_holder[0] = content2
+                    else:
+                        self.chat_history.append({'role': 'assistant', 'content': content1})
+                        full_content_holder[0] = content1
+                except Exception as e:
+                    print(f"[Web LLM Stream] 异常: {e}")
+                finally:
+                    sentence_queue.put(SENTINEL)
+
+            # --- Thread-2: sentence_queue → TTS → emit audio chunks ---
+            def tts_web_producer():
+                i = 0
+                while True:
+                    sentence = sentence_queue.get()
+                    if sentence is SENTINEL:
+                        break
+                    i += 1
+                    try:
+                        emit_fn("voice_status", {"status": "tts", "message": f"正在合成语音 ({i})..."})
+
+                        if TTS_ENGINE == "kokoro":
+                            def speed_callable(len_ps):
+                                speed = 0.8
+                                if len_ps <= 83:
+                                    speed = 1
+                                elif len_ps < 183:
+                                    speed = 1 - (len_ps - 83) / 500
+                                return speed * 1.5
+
+                            generator = self.kokoro_pipeline(
+                                sentence, voice=KOKORO_VOICE, speed=speed_callable,
+                            )
+                            result = next(generator)
+                            wav = result.audio
+                            if isinstance(wav, torch.Tensor):
+                                wav = wav.cpu().numpy()
+                            sr = KOKORO_SAMPLE_RATE
+                        else:
+                            wavs, sr = self.tts_model.generate_custom_voice(
+                                text=sentence,
+                                language=TTS_LANGUAGE,
+                                speaker=TTS_SPEAKER,
+                            )
+                            wav = wavs[0]
+
+                        # 首次发送采样率
+                        if not sr_sent[0]:
+                            emit_fn("voice_audio_start", {"sampleRate": sr})
+                            sr_sent[0] = True
+
+                        # 发送 PCM 音频数据
+                        wav_f32 = wav.astype(np.float32)
+                        emit_fn("voice_audio_chunk", wav_f32.tobytes())
+                        print(f"[Web Voice TTS] 合成完成 ({i}): {sentence[:30]}...")
+
+                    except Exception as e:
+                        print(f"[Web Voice TTS] 合成第 {i} 段失败: {e}")
+
+                emit_fn("voice_audio_end", {})
+
+            # 启动两级流水线
+            llm_thread = threading.Thread(target=llm_streaming_producer, daemon=True)
+            tts_thread = threading.Thread(target=tts_web_producer, daemon=True)
+            llm_thread.start()
+            tts_thread.start()
+
+            llm_thread.join()
+            # LLM 完毕，更新 UI
+            ai_content = full_content_holder[0]
+            if ai_content:
+                self.comm.append_chat.emit("AI", ai_content)
+                try:
+                    web_broadcast("AI", ai_content)
+                except Exception:
+                    pass
+
+            tts_thread.join()
+
+        except Exception as e:
+            emit_fn("voice_status", {"status": "error", "message": f"语音处理异常: {e}"})
+            print(f"[Web Voice] 异常: {e}")
+
     def handle_exit(self):
         print("助手正在退出...")
         QApplication.quit()

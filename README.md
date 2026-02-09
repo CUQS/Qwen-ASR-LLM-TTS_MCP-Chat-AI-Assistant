@@ -53,7 +53,7 @@
 
 Access the web GUI remotely from your phone using [Tailscale](https://tailscale.com/).
 
-<img src="demo_phone.jpg" alt="Phone Demo" width="200"/>
+<img src="demo_phone.jpg" alt="Phone Demo" width="200"/>  <img src="demo_phone2.jpg" alt="Phone Demo" width="200"/>
 
 ---
 
@@ -121,7 +121,7 @@ uv pip install PyQt6 ollama keyboard mcp flask_socketio
 ## 🎮 Usage
 
 ```bash
-python ai_assistant.py
+python ai_assistant_llm_streaming.py
 ```
 
 | Shortcut | Action |

@@ -1,3 +1,9 @@
+// ===== 自动 HTTPS 跳转（手机端需要 HTTPS 才能使用麦克风） =====
+if (window.location.protocol === "http:" && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
+  // 非 localhost 且不是 HTTPS → 自动跳转
+  window.location.href = window.location.href.replace(/^http:/, "https:");
+}
+
 // ===== Socket.IO 连接 =====
 const socket = io();
 
@@ -171,6 +177,10 @@ socket.on("chat_history", (history) => {
 
 socket.on("chat_message", (msg) => {
   appendMessage(msg.sender, msg.content, msg.timestamp);
+  // 文字聊天收到 AI 回复后重置 FAB
+  if (msg.sender === 'AI' && voiceFabState === 'loading' && !isVoicePipelineActive) {
+    setVoiceFabState('idle');
+  }
 });
 
 socket.on("chat_cleared", () => {
@@ -190,6 +200,8 @@ function sendMessage() {
 
   // Show thinking indicator
   showThinking();
+  // FAB 显示加载状态
+  setVoiceFabState('loading');
 }
 
 sendBtn.addEventListener("click", sendMessage);
@@ -227,4 +239,369 @@ document.querySelectorAll(".quick-btn").forEach(btn => {
     sendBtn.disabled = false;
     sendMessage();
   });
+});
+
+// ===================================================================
+// ===== 语音输入 / 输出 =====
+// ===================================================================
+
+const voiceMicBtn    = document.getElementById("voiceMicBtn");
+
+// ---------- 录音器 ----------
+class VoiceRecorder {
+  constructor() {
+    this.audioContext = null;
+    this.stream = null;
+    this.processor = null;
+    this.source = null;
+    this.chunks = [];
+    this.isRecording = false;
+    this.actualSampleRate = 16000;
+  }
+
+  async start() {
+    this.chunks = [];
+    this.stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1 }
+    });
+    // 尝试以 16kHz 创建 AudioContext（ASR 要求 16kHz）
+    try {
+      this.audioContext = new AudioContext({ sampleRate: 16000 });
+    } catch {
+      this.audioContext = new AudioContext();
+    }
+    this.actualSampleRate = this.audioContext.sampleRate;
+
+    this.source = this.audioContext.createMediaStreamSource(this.stream);
+    this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
+
+    this.processor.onaudioprocess = (e) => {
+      if (this.isRecording) {
+        this.chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+      }
+    };
+
+    this.source.connect(this.processor);
+    this.processor.connect(this.audioContext.destination);
+    this.isRecording = true;
+  }
+
+  stop() {
+    this.isRecording = false;
+    if (this.source) this.source.disconnect();
+    if (this.processor) this.processor.disconnect();
+    if (this.stream) this.stream.getTracks().forEach(t => t.stop());
+
+    // 拼接所有录音片段
+    const totalLength = this.chunks.reduce((s, c) => s + c.length, 0);
+    let pcm = new Float32Array(totalLength);
+    let offset = 0;
+    this.chunks.forEach(c => { pcm.set(c, offset); offset += c.length; });
+    this.chunks = [];
+
+    // 如果浏览器实际采样率不是 16kHz，进行重采样
+    if (this.actualSampleRate !== 16000) {
+      pcm = this._resample(pcm, this.actualSampleRate, 16000);
+    }
+
+    if (this.audioContext && this.audioContext.state !== "closed") {
+      this.audioContext.close();
+    }
+    return pcm;
+  }
+
+  _resample(data, fromRate, toRate) {
+    const ratio = fromRate / toRate;
+    const newLength = Math.round(data.length / ratio);
+    const result = new Float32Array(newLength);
+    for (let i = 0; i < newLength; i++) {
+      const srcIdx = i * ratio;
+      const lo = Math.floor(srcIdx);
+      const hi = Math.min(lo + 1, data.length - 1);
+      const frac = srcIdx - lo;
+      result[i] = data[lo] * (1 - frac) + data[hi] * frac;
+    }
+    return result;
+  }
+}
+
+// ---------- 流式音频播放器 ----------
+class AudioStreamPlayer {
+  constructor(sampleRate) {
+    this.sampleRate = sampleRate;
+    this.ctx = null;
+    this.nextStartTime = 0;
+    this.lastSource = null;
+    this.onEnded = null;
+    this._ended = false;
+  }
+
+  init() {
+    this.ctx = new AudioContext({ sampleRate: this.sampleRate });
+    this.nextStartTime = this.ctx.currentTime + 0.05; // 小缓冲
+  }
+
+  playChunk(arrayBuffer) {
+    if (!this.ctx) this.init();
+
+    const float32Data = new Float32Array(arrayBuffer);
+    if (float32Data.length === 0) return;
+
+    const audioBuffer = this.ctx.createBuffer(1, float32Data.length, this.sampleRate);
+    audioBuffer.getChannelData(0).set(float32Data);
+
+    const source = this.ctx.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(this.ctx.destination);
+
+    const now = this.ctx.currentTime;
+    const startTime = Math.max(now + 0.02, this.nextStartTime);
+    source.start(startTime);
+    this.nextStartTime = startTime + audioBuffer.duration;
+    this.lastSource = source;
+  }
+
+  end() {
+    if (this._ended) return;
+    this._ended = true;
+    // 等最后一个 chunk 播完再回调
+    if (this.ctx) {
+      const remaining = this.nextStartTime - this.ctx.currentTime;
+      setTimeout(() => {
+        if (this.onEnded) this.onEnded();
+        this.close();
+      }, Math.max(0, remaining * 1000) + 200);
+    } else {
+      if (this.onEnded) this.onEnded();
+    }
+  }
+
+  close() {
+    if (this.ctx && this.ctx.state !== "closed") {
+      this.ctx.close().catch(() => {});
+    }
+    this.ctx = null;
+  }
+}
+
+// ---------- 状态变量 ----------
+let voiceRecorder = null;
+let audioStreamPlayer = null;
+let voiceCancelled = false;
+let isVoicePipelineActive = false;  // 标记语音管线是否活跃
+
+// ---------- FAB 状态管理 ----------
+// States: 'idle' | 'recording' | 'loading' | 'playing'
+let voiceFabState = 'idle';
+
+function setVoiceFabState(state) {
+  voiceFabState = state;
+  voiceMicBtn.classList.remove('recording', 'loading', 'playing');
+  if (state !== 'idle') {
+    voiceMicBtn.classList.add(state);
+  }
+  const titles = {
+    idle: '点击说话',
+    recording: '点击停止录音',
+    loading: '处理中…',
+    playing: '点击停止播放',
+  };
+  voiceMicBtn.title = titles[state] || '';
+}
+
+// ---------- 麦克风权限检查 ----------
+let micPermissionGranted = false;
+
+async function checkMicPermission() {
+  // 0) 检查是否在安全上下文中（HTTPS 或 localhost）
+  if (!window.isSecureContext) {
+    const httpsUrl = window.location.href.replace(/^http:/, "https:");
+    return {
+      ok: false,
+      reason: `当前页面不在安全上下文中，浏览器禁止使用麦克风。\n\n解决方法：\n将地址栏中的 http:// 改为 https:// 即可。\n\n点击确定后将自动跳转到 HTTPS 版本。`,
+      redirect: httpsUrl,
+    };
+  }
+
+  // 1) 浏览器是否支持 mediaDevices
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    return {
+      ok: false,
+      reason: "当前浏览器不支持麦克风访问。\n\n可能原因：\n• 浏览器版本过低\n• 浏览器限制了该功能\n\n建议使用最新版 Chrome / Edge / Safari。",
+    };
+  }
+
+  // 2) 使用 Permissions API 查询当前权限状态（如果可用）
+  if (navigator.permissions && navigator.permissions.query) {
+    try {
+      const result = await navigator.permissions.query({ name: "microphone" });
+      if (result.state === "denied") {
+        return {
+          ok: false,
+          reason: "麦克风权限已被拒绝。\n\n请在浏览器设置中重新允许本站使用麦克风：\n• Chrome: 点击地址栏左侧锁形图标 → 网站设置 → 麦克风 → 允许\n• Edge: 点击地址栏左侧锁形图标 → 权限 → 麦克风 → 允许\n• 修改后刷新页面",
+        };
+      }
+      // "granted" 或 "prompt" 都可以继续
+    } catch {
+      // 某些浏览器不支持查询 microphone 权限，忽略
+    }
+  }
+
+  // 3) 尝试实际获取麦克风流来确认权限
+  try {
+    const testStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    testStream.getTracks().forEach(t => t.stop()); // 立即释放
+    micPermissionGranted = true;
+    return { ok: true };
+  } catch (err) {
+    let reason;
+    if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+      reason = "麦克风权限被拒绝。\n\n请点击浏览器地址栏左侧的图标，允许本站访问麦克风后重试。";
+    } else if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
+      reason = "未检测到麦克风设备。请确认麦克风已连接并被系统识别。";
+    } else if (err.name === "NotReadableError" || err.name === "TrackStartError") {
+      reason = "麦克风被其他应用占用，请关闭占用麦克风的程序后重试。";
+    } else {
+      reason = `麦克风访问失败: ${err.name}\n${err.message}`;
+    }
+    return { ok: false, reason };
+  }
+}
+
+// ---------- 录音按钮事件 ----------
+async function startVoiceRecording() {
+  if (voiceFabState !== 'idle') return;
+  voiceCancelled = false;
+
+  // 先检查权限
+  if (!micPermissionGranted) {
+    const check = await checkMicPermission();
+    if (!check.ok) {
+      alert(check.reason);
+      if (check.redirect) {
+        window.location.href = check.redirect;
+      }
+      return;
+    }
+  }
+
+  voiceRecorder = new VoiceRecorder();
+  try {
+    await voiceRecorder.start();
+    setVoiceFabState('recording');
+  } catch (err) {
+    console.error("麦克风访问失败:", err);
+    micPermissionGranted = false;
+    let msg;
+    if (err.name === "NotAllowedError") {
+      msg = "麦克风权限被拒绝，请在浏览器设置中允许后重试。";
+    } else if (err.name === "NotFoundError") {
+      msg = "未检测到麦克风设备。";
+    } else if (err.name === "NotReadableError") {
+      msg = "麦克风被其他应用占用。";
+    } else {
+      msg = `麦克风错误: ${err.name} - ${err.message}`;
+    }
+    alert(msg);
+  }
+}
+
+function stopVoiceRecording() {
+  if (voiceFabState !== 'recording') return;
+
+  if (!voiceRecorder || !voiceRecorder.isRecording) {
+    setVoiceFabState('idle');
+    return;
+  }
+
+  const pcm = voiceRecorder.stop();
+  voiceRecorder = null;
+
+  // 太短（<0.3秒@16kHz = 4800 samples）
+  if (pcm.length < 4800) {
+    setVoiceFabState('idle');
+    return;
+  }
+
+  if (voiceCancelled) {
+    setVoiceFabState('idle');
+    return;
+  }
+
+  setVoiceFabState('loading');
+  isVoicePipelineActive = true;
+  socket.emit("voice_input", pcm.buffer);
+}
+
+function stopPlayback() {
+  voiceCancelled = true;
+  if (audioStreamPlayer) {
+    audioStreamPlayer.close();
+    audioStreamPlayer = null;
+  }
+  isVoicePipelineActive = false;
+  setVoiceFabState('idle');
+}
+
+// FAB 点击事件（桌面 + 手机统一为 click）
+voiceMicBtn.addEventListener("click", async (e) => {
+  e.preventDefault();
+  if (voiceFabState === 'idle') {
+    await startVoiceRecording();
+  } else if (voiceFabState === 'recording') {
+    stopVoiceRecording();
+  } else if (voiceFabState === 'playing') {
+    stopPlayback();
+  }
+  // loading 状态：不响应点击
+});
+
+// 阻止手机端长按弹出上下文菜单
+voiceMicBtn.addEventListener("contextmenu", (e) => e.preventDefault());
+
+// ---------- Socket.IO 语音事件 ----------
+socket.on("voice_status", (data) => {
+  if (voiceCancelled) return;
+  if (data.status === "error") {
+    // 出错时强制重置
+    if (audioStreamPlayer) {
+      audioStreamPlayer.close();
+      audioStreamPlayer = null;
+    }
+    isVoicePipelineActive = false;
+    setVoiceFabState('idle');
+  } else if (data.status === "done") {
+    // 正常完成：若还在 loading（未产生音频），重置
+    if (voiceFabState === 'loading') {
+      isVoicePipelineActive = false;
+      setVoiceFabState('idle');
+    }
+  }
+});
+
+socket.on("voice_asr_result", (data) => {
+  // ASR 文本通过 chat_message 广播显示
+});
+
+socket.on("voice_audio_start", (data) => {
+  if (voiceCancelled) return;
+  audioStreamPlayer = new AudioStreamPlayer(data.sampleRate);
+  audioStreamPlayer.init();
+  audioStreamPlayer.onEnded = () => {
+    audioStreamPlayer = null;
+    isVoicePipelineActive = false;
+    setVoiceFabState('idle');
+  };
+  setVoiceFabState('playing');
+});
+
+socket.on("voice_audio_chunk", (data) => {
+  if (voiceCancelled || !audioStreamPlayer) return;
+  audioStreamPlayer.playChunk(data);
+});
+
+socket.on("voice_audio_end", () => {
+  if (audioStreamPlayer) {
+    audioStreamPlayer.end();
+  }
 });
