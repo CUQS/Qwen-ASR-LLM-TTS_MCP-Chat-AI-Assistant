@@ -59,6 +59,30 @@ themeToggle.addEventListener("click", () => {
 
 initTheme();
 
+// ===== 自动请求麦克风权限（页面加载时） =====
+window.addEventListener('DOMContentLoaded', async () => {
+  try {
+    const res = await checkMicPermission();
+    if (!res.ok) {
+      console.warn('麦克风权限检查:', res.reason);
+      // 若返回了 redirect（HTTP -> HTTPS），询问用户是否跳转
+      if (res.redirect) {
+        if (confirm(`${res.reason}\n\n是否现在跳转到 HTTPS？`)) {
+          window.location.href = res.redirect;
+        }
+      } else {
+        // 在右上角状态处给出提示，但不打断用户
+        statusText.textContent = '麦克风未授权';
+      }
+    } else {
+      // 已授权，更新状态以便用户能看到
+      statusText.textContent = '麦克风已授权';
+    }
+  } catch (err) {
+    console.error('麦克风权限请求失败', err);
+  }
+});
+
 // ===== 连接状态 =====
 socket.on("connect", () => {
   statusDot.classList.add("online");
@@ -287,27 +311,50 @@ class VoiceRecorder {
   }
 
   stop() {
-    this.isRecording = false;
-    if (this.source) this.source.disconnect();
-    if (this.processor) this.processor.disconnect();
-    if (this.stream) this.stream.getTracks().forEach(t => t.stop());
+    // convenience: capture current data and then fully release resources
+    const pcm = this.snapshot();
+    this.release();
+    return pcm;
+  }
 
-    // 拼接所有录音片段
+  snapshot() {
+    // Capture current recorded chunks into a PCM buffer without closing stream/context
+    const wasRecording = this.isRecording;
+    this.isRecording = false;
+
     const totalLength = this.chunks.reduce((s, c) => s + c.length, 0);
     let pcm = new Float32Array(totalLength);
     let offset = 0;
     this.chunks.forEach(c => { pcm.set(c, offset); offset += c.length; });
     this.chunks = [];
 
-    // 如果浏览器实际采样率不是 16kHz，进行重采样
     if (this.actualSampleRate !== 16000) {
       pcm = this._resample(pcm, this.actualSampleRate, 16000);
     }
 
-    if (this.audioContext && this.audioContext.state !== "closed") {
-      this.audioContext.close();
-    }
+    // restore recording flag
+    this.isRecording = wasRecording;
     return pcm;
+  }
+
+  release() {
+    // Fully release audio resources (stop tracks, disconnect nodes, close AudioContext)
+    this.isRecording = false;
+    try {
+      if (this.source) this.source.disconnect();
+      if (this.processor) this.processor.disconnect();
+      if (this.stream) this.stream.getTracks().forEach(t => t.stop());
+      this.stream = null;
+      this.source = null;
+      this.processor = null;
+      this.chunks = [];
+      if (this.audioContext && this.audioContext.state !== "closed") {
+        this.audioContext.close().catch(() => {});
+      }
+      this.audioContext = null;
+    } catch (e) {
+      console.warn('release mic error', e);
+    }
   }
 
   _resample(data, fromRate, toRate) {
@@ -389,6 +436,7 @@ let voiceRecorder = null;
 let audioStreamPlayer = null;
 let voiceCancelled = false;
 let isVoicePipelineActive = false;  // 标记语音管线是否活跃
+let micHeldForPlayback = false; // 标记是否为播放而保留麦克风
 
 // ---------- FAB 状态管理 ----------
 // States: 'idle' | 'recording' | 'loading' | 'playing'
@@ -485,6 +533,13 @@ async function startVoiceRecording() {
     }
   }
 
+  // 如果之前为了播放而保留了麦克风实例，尝试重用并直接进入录音
+  if (voiceRecorder && voiceRecorder.stream && !voiceRecorder.isRecording) {
+    voiceRecorder.isRecording = true;
+    setVoiceFabState('recording');
+    return;
+  }
+
   voiceRecorder = new VoiceRecorder();
   try {
     await voiceRecorder.start();
@@ -514,16 +569,28 @@ function stopVoiceRecording() {
     return;
   }
 
-  const pcm = voiceRecorder.stop();
-  voiceRecorder = null;
+  // 获取当前录音数据，但保留麦克风与 AudioContext，直到播放结束再释放
+  const pcm = voiceRecorder.snapshot();
+  // 停止继续录制（但不释放设备）
+  voiceRecorder.isRecording = false;
+  micHeldForPlayback = true;
 
   // 太短（<0.3秒@16kHz = 4800 samples）
   if (pcm.length < 4800) {
+    // 过短则立即释放麦克风
+    voiceRecorder.release();
+    voiceRecorder = null;
+    micHeldForPlayback = false;
     setVoiceFabState('idle');
     return;
   }
 
   if (voiceCancelled) {
+    if (voiceRecorder) {
+      voiceRecorder.release();
+      voiceRecorder = null;
+    }
+    micHeldForPlayback = false;
     setVoiceFabState('idle');
     return;
   }
@@ -541,6 +608,12 @@ function stopPlayback() {
   }
   isVoicePipelineActive = false;
   setVoiceFabState('idle');
+  // 若麦克风因播放被保留，则释放
+  if (micHeldForPlayback && voiceRecorder) {
+    voiceRecorder.release();
+    voiceRecorder = null;
+    micHeldForPlayback = false;
+  }
 }
 
 // FAB 点击事件（桌面 + 手机统一为 click）
@@ -591,6 +664,12 @@ socket.on("voice_audio_start", (data) => {
     audioStreamPlayer = null;
     isVoicePipelineActive = false;
     setVoiceFabState('idle');
+    // 播放结束后若麦克风被保留则释放
+    if (micHeldForPlayback && voiceRecorder) {
+      voiceRecorder.release();
+      voiceRecorder = null;
+      micHeldForPlayback = false;
+    }
   };
   setVoiceFabState('playing');
 });
