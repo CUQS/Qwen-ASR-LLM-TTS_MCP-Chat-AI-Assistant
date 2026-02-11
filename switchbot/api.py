@@ -29,31 +29,21 @@ except Exception:
     import urllib.error
     HAS_REQUESTS = False
 
-BASE_URL = "https://api.switch-bot.com/v1.1"
-with open('D:\\mcp\\switchbot\\devices_list.json', 'r', encoding='utf-8') as f:
-    DEVICES_LIST = json.load(f)
 
-# 检查并在必要时更新 devices_list.json 的 updated_at（在模块导入时执行，安全且不抛出异常）
-try:
-    from datetime import datetime
-    DEVICES_JSON_PATH = os.path.join(os.path.dirname(__file__), 'devices_list.json')
-    # 如果基于模块路径的文件不存在，回退到绝对路径（与原先读取路径一致）
-    if not os.path.exists(DEVICES_JSON_PATH):
-        DEVICES_JSON_PATH = r'D:\\mcp\\switchbot\\devices_list.json'
-    today = datetime.now().strftime('%Y%m%d')
-    existing = DEVICES_LIST.get('updated_at', '')
-    if existing != today:
-        DEVICES_LIST['updated_at'] = today
-        try:
-            with open(DEVICES_JSON_PATH, 'w', encoding='utf-8') as wf:
-                json.dump(DEVICES_LIST, wf, ensure_ascii=False, indent=4)
-            print(f"Updated {DEVICES_JSON_PATH}: updated_at {existing!r} -> {today!r}", file=sys.stderr)
-        except Exception as e:
-            print(f"Failed to write {DEVICES_JSON_PATH}: {e}", file=sys.stderr)
-    else:
-        print(f"{DEVICES_JSON_PATH} is up-to-date ({today})", file=sys.stderr)
-except Exception as e:
-    print(f"Error checking/updating devices_list.json: {e}", file=sys.stderr)
+def load_token_secret(path: str = r'D:\\mcp\\switchbot\\token.json'):
+    try:
+        with open(path, 'r', encoding='utf-8') as tf:
+            td = json.load(tf)
+        token = td.get('SWITCHBOT_TOKEN') or td.get('SWITCH_BOT_TOKEN')
+        secret = td.get('SWITCHBOT_SECRET') or td.get('SWITCH_BOT_SECRET')
+        if token and secret:
+            return token, secret
+        raise ValueError('Missing keys in token file')
+    except Exception as e:
+        print(f"Failed to read token file {path}: {e}", file=sys.stderr)
+        token = os.environ.get('SWITCHBOT_TOKEN') or os.environ.get('SWITCH_BOT_TOKEN') or input('Enter your SWITCHBOT_TOKEN: ').strip()
+        secret = os.environ.get('SWITCHBOT_SECRET') or os.environ.get('SWITCH_BOT_SECRET') or input('Enter your SWITCHBOT_SECRET: ').strip()
+        return token, secret
 
 def make_headers(token: str, secret: str, nonce: str | None = None, t: int | None = None) -> dict:
     nonce = nonce or str(uuid.uuid4())
@@ -70,7 +60,6 @@ def make_headers(token: str, secret: str, nonce: str | None = None, t: int | Non
         'Content-Type': 'application/json; charset=utf8',
     }
     return headers
-
 
 def http_get(path: str, headers: dict) -> tuple[int, dict]:
     url = BASE_URL + path
@@ -91,7 +80,6 @@ def http_get(path: str, headers: dict) -> tuple[int, dict]:
                 return e.code, {'message': str(e)}
         except Exception as e:
             return 0, {'message': str(e)}
-
 
 def list_devices(headers: dict) -> list:
     """Return a combined list of physical devices and infrared remote devices.
@@ -128,6 +116,42 @@ def list_devices(headers: dict) -> list:
 
     return []
 
+BASE_URL = "https://api.switch-bot.com/v1.1"
+DEVICES_JSON_PATH = os.path.join(os.path.dirname(__file__), 'devices_list.json')
+
+def update_devices_list_file(path: str = DEVICES_JSON_PATH, datestamp: str | None = None):
+    """Fetch devices from API and update local devices_list.json file."""
+    token, secret = load_token_secret()
+    headers = make_headers(token, secret)
+    devices = list_devices(headers)
+    with open(path, 'w', encoding='utf-8') as f:
+        devices_list = {'devices': devices, 'updated_at': datestamp or ''}
+        json.dump(devices_list, f, ensure_ascii=False, indent=4)
+    return devices_list
+
+# 检查并在必要时更新 devices_list.json 的 updated_at（在模块导入时执行，安全且不抛出异常）
+try:
+    from datetime import datetime
+    today = datetime.now().strftime('%Y%m%d')
+    
+    # 如果基于模块路径的文件不存在，回退到绝对路径（与原先读取路径一致）
+    if not os.path.exists(DEVICES_JSON_PATH):
+        DEVICES_LIST = update_devices_list_file(DEVICES_JSON_PATH, today)
+    else:
+        with open(DEVICES_JSON_PATH, 'r', encoding='utf-8') as rf:
+            DEVICES_LIST = json.load(rf)
+        existing = DEVICES_LIST.get('updated_at', '')
+        if existing != today:
+            try:
+                DEVICES_LIST = update_devices_list_file(DEVICES_JSON_PATH, today)
+                print(f"Updated {DEVICES_JSON_PATH} with today's date ({today})", file=sys.stderr)
+            except Exception as e:
+                print(f"Failed to write {DEVICES_JSON_PATH}: {e}", file=sys.stderr)
+        else:
+            print(f"{DEVICES_JSON_PATH} is up-to-date ({today})", file=sys.stderr)
+except Exception as e:
+    print(f"Error checking/updating devices_list.json: {e}", file=sys.stderr)
+
 
 def get_device_status(device_id: str, headers: dict) -> dict:
     status, data = http_get(f'/devices/{device_id}/status', headers)
@@ -135,6 +159,60 @@ def get_device_status(device_id: str, headers: dict) -> dict:
         # include body message when available
         return {'error': f'HTTP {status}', 'body': data}
     return data
+
+
+def get_wiosensor_status_by_name(device_name: str = '防水温湿度計 0E', headers: dict = None) -> dict:
+    """Find a WoIO outdoor sensor by name and return its raw status and a small parsed summary.
+
+    Looks for devices with a deviceType containing 'WoIOSensor' and matching the provided
+    device_name (exact or substring). Returns a dict with keys:
+      - device: deviceName
+      - deviceType: deviceType
+      - status: raw API response from get_device_status
+      - parsed: common extracted fields like temperature, humidity, battery, illuminance
+    """
+    if headers is None:
+        raise ValueError("headers is required")
+
+    devices = DEVICES_LIST.get('devices', []) if isinstance(DEVICES_LIST, dict) else []
+    if not devices:
+        devices = list_devices(headers)
+
+    dev = None
+    # prefer devices explicitly of WoIOSensor type
+    for d in devices:
+        if 'WoIOSensor' in d.get('deviceType', '') and (d.get('deviceName') == device_name or device_name in d.get('deviceName', '')):
+            dev = d
+            break
+
+    # fallback: any device matching the name
+    if not dev:
+        for d in devices:
+            if d.get('deviceName') == device_name or device_name in d.get('deviceName', ''):
+                dev = d
+                break
+
+    if not dev:
+        return {'error': 'device not found', 'device_name': device_name}
+
+    device_id = dev.get('deviceId')
+    status = get_device_status(device_id, headers)
+
+    parsed = {}
+    if isinstance(status, dict) and isinstance(status.get('body'), dict):
+        body = status['body']
+        for k in ('temperature', 'temperatureC', 'temp', 'humidity', 'battery', 'batteryLevel', 'batteryPercent', 'signal', 'illuminance', 'lux'):
+            if k in body:
+                parsed[k] = body[k]
+        # normalize common names
+        temp = body.get('temperature') or body.get('temperatureC') or body.get('temp')
+        hum = body.get('humidity')
+        if temp is not None:
+            parsed['temperature'] = temp
+        if hum is not None:
+            parsed['humidity'] = hum
+
+    return {'device': dev.get('deviceName'), 'deviceType': dev.get('deviceType'), 'status': status, 'parsed': parsed}
 
 
 def pretty_print(obj):
@@ -180,15 +258,17 @@ def find_device_by_name(devices: list, name: str) -> dict | None:
     return None
 
 
-def control_living_room_lights(action: str, headers: dict, devices: list, names: list | None = None, brightness: int | None = None) -> dict:
-    """
-    Control named lights. If `names` is None, defaults to ['客厅1', '客厅2'].
-    `names` should be a list of device names (exact match or substring match).
+def control_devices_by_name(action: str, headers: dict, devices: list, names: list | None = None, brightness: int | None = None) -> dict:
+    """Control SwitchBot devices (lights, air conditioners, etc.) by name.
 
-    Supported actions:
-      - 'on' / 'off' : turn on/off
-      - 'brightnessUp' / 'brightnessDown' : step brightness up/down (no parameter)
-      - 'setBrightness' : set absolute brightness (requires `brightness` int 0-100)
+    Parameters:
+        - action: 'on'|'off'|'brightnessUp'|'brightnessDown'|'setBrightness'
+        - headers: prepared API headers with auth
+        - devices: list of devices (from list_devices)
+        - names: list of device names (exact or substring match). If None, defaults to ['客厅1', '客厅2'].
+        - brightness: int 0-100, required only for 'setBrightness'
+    Returns:
+        - dict mapping device names to API response or error messages.
     """
     allowed = {'on', 'off', 'brightnessUp', 'brightnessDown', 'setBrightness'}
     if action not in allowed:
@@ -238,20 +318,31 @@ def control_living_room_lights(action: str, headers: dict, devices: list, names:
     return results
 
 
-def load_token_secret(path: str = r'D:\\mcp\\switchbot\\token.json'):
-    try:
-        with open(path, 'r', encoding='utf-8') as tf:
-            td = json.load(tf)
-        token = td.get('SWITCHBOT_TOKEN') or td.get('SWITCH_BOT_TOKEN')
-        secret = td.get('SWITCHBOT_SECRET') or td.get('SWITCH_BOT_SECRET')
-        if token and secret:
-            return token, secret
-        raise ValueError('Missing keys in token file')
-    except Exception as e:
-        print(f"Failed to read token file {path}: {e}", file=sys.stderr)
-        token = os.environ.get('SWITCHBOT_TOKEN') or os.environ.get('SWITCH_BOT_TOKEN') or input('Enter your SWITCHBOT_TOKEN: ').strip()
-        secret = os.environ.get('SWITCHBOT_SECRET') or os.environ.get('SWITCH_BOT_SECRET') or input('Enter your SWITCHBOT_SECRET: ').strip()
-        return token, secret
+# Backward-compatible aliases
+def control_living_room_lights(action, headers, devices, names=None, brightness=None):
+    return control_devices_by_name(action, headers, devices, names, brightness)
+
+def control_aircon_power_by_name(action, headers, devices, names=None):
+    if names is None:
+        names = ['空调1']
+    return control_devices_by_name(action, headers, devices, names)
+
+
+def normalize_power_state(power) -> str:
+    if isinstance(power, bool):
+        return "on" if power else "off"
+    if isinstance(power, (int, float)):
+        if power == 1:
+            return "on"
+        if power == 0:
+            return "off"
+    if isinstance(power, str):
+        p = power.strip().lower()
+        if p in ("on", "true", "1", "yes", "y"):
+            return "on"
+        if p in ("off", "false", "0", "no", "n"):
+            return "off"
+    raise ValueError("power must be on/off, true/false, 1/0, or a boolean")
 
 
 def main():
@@ -306,9 +397,9 @@ def main():
                     names = args
         print('Using local devices list.' if isinstance(DEVICES_LIST, dict) and DEVICES_LIST.get('devices') else 'Using fetched devices list.')
         if action == 'setBrightness':
-            results = control_living_room_lights(action, headers, devices, names, brightness)
+            results = control_devices_by_name(action, headers, devices, names, brightness)
         else:
-            results = control_living_room_lights(action, headers, devices, names)
+            results = control_devices_by_name(action, headers, devices, names)
         pretty_print(results)
         return
 

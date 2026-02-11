@@ -2,6 +2,7 @@ from mcp.server.fastmcp import FastMCP
 import os
 import subprocess
 from get_weather.get_weather import get_yahoo_weather
+from switchbot import api as _switch
 
 mcp = FastMCP("MyLocalHelper")
 
@@ -30,38 +31,34 @@ def yahoo_weather():
     return get_yahoo_weather()
 
 @mcp.tool(
-    name="control_switchbot_lights",
+    name="control_switchbot_devices",
     description="""
-    使用 SwitchBot 控制客厅灯。
+    使用 SwitchBot 控制客厅设备（灯、空调等）。
 
     参数:
       - action: 'on'|'off'|'brightnessUp'|'brightnessDown'|'setBrightness'
-      - names: 设备名称字符串（逗号分隔）或列表，例如 '客厅1,客厅2' 或 ['客厅1','客厅2']，目前我的客厅只有这两个灯，传 None 则控制所有灯
+        其中 brightnessUp / brightnessDown / setBrightness 仅适用于灯
+      - names: 设备名称字符串（逗号分隔）或列表，例如 '客厅1,客厅2,空调1' 或 ['客厅1','客厅2']
+        目前客厅有两个灯（客厅1、客厅2）和一个空调（空调1），传 None 则默认控制客厅1和客厅2
       - brightness: 整数 0-100，仅在 'setBrightness' 时需要
 
     返回 API 响应或错误信息字典。
     """,
 )
-def control_switchbot_lights(action: str, names=None, brightness: int | None = None):
-    # 延迟导入以避免模块导入时副作用
+def control_switchbot_devices(action: str, names=None, brightness: int | None = None):
     try:
-        from switchbot import api as _sb
-    except Exception as e:
-        return {"error": f"Failed to import switchbot.api: {e}"}
-
-    try:
-        token, secret = _sb.load_token_secret()
+        token, secret = _switch.load_token_secret()
     except Exception as e:
         return {"error": f"Missing SWITCHBOT_TOKEN/SECRET; failed to load from token.json: {e}"}
 
-    headers = _sb.make_headers(token, secret)
+    headers = _switch.make_headers(token, secret)
 
     # 使用本地设备清单（如果可用），否则从 API 获取
     devices = []
-    if isinstance(_sb.DEVICES_LIST, dict):
-        devices = _sb.DEVICES_LIST.get('devices', []) or []
+    if isinstance(_switch.DEVICES_LIST, dict):
+        devices = _switch.DEVICES_LIST.get('devices', []) or []
     if not devices:
-        devices = _sb.list_devices(headers)
+        devices = _switch.list_devices(headers)
 
     # 解析 names 参数
     if names is None:
@@ -77,7 +74,7 @@ def control_switchbot_lights(action: str, names=None, brightness: int | None = N
         return {"error": "Invalid names type; must be None, str or list"}
 
     try:
-        results = _sb.control_living_room_lights(action, headers, devices, names_list, brightness)
+        results = _switch.control_devices_by_name(action, headers, devices, names_list, brightness)
     except Exception as e:
         return {"error": str(e)}
     return results
@@ -88,23 +85,18 @@ def control_switchbot_lights(action: str, names=None, brightness: int | None = N
 )
 def get_switchbot_hub2_info(names=None):
     try:
-        from switchbot import api as _sb
-    except Exception as e:
-        return {"error": f"Failed to import switchbot.api: {e}"}
-
-    try:
-        token, secret = _sb.load_token_secret()
+        token, secret = _switch.load_token_secret()
     except Exception as e:
         return {"error": f"Missing SWITCHBOT_TOKEN/SECRET; failed to load from token.json: {e}"}
 
-    headers = _sb.make_headers(token, secret)
+    headers = _switch.make_headers(token, secret)
 
     # 使用本地设备清单（如果可用），否则从 API 获取
     devices = []
-    if isinstance(_sb.DEVICES_LIST, dict):
-        devices = _sb.DEVICES_LIST.get('devices', []) or []
+    if isinstance(_switch.DEVICES_LIST, dict):
+        devices = _switch.DEVICES_LIST.get('devices', []) or []
     if not devices:
-        devices = _sb.list_devices(headers)
+        devices = _switch.list_devices(headers)
 
     # 筛选 Hub 设备
     hubs = [d for d in devices if 'Hub' in d.get('deviceType', '')]
@@ -131,15 +123,15 @@ def get_switchbot_hub2_info(names=None):
         if lv < 1 or lv > 15:
             return {"level": lv, "description": "超出范围（非 1-15）"}
         if lv <= 3:
-            desc = "极暗（接近黑暗）"
+            desc = "极暗"
         elif lv <= 6:
-            desc = "昏暗（室内暗光）"
+            desc = "暗"
         elif lv <= 9:
-            desc = "适中（常规室内光）"
+            desc = "适中"
         elif lv <= 12:
-            desc = "明亮（适合阅读）"
+            desc = "明亮"
         else:
-            desc = "非常明亮（直射阳光/户外光照）"
+            desc = "非常明亮"
         return {"level": lv, "description": desc, "scale": "1-15"}
 
     results = []
@@ -156,7 +148,7 @@ def get_switchbot_hub2_info(names=None):
                 continue
         device_id = h.get('deviceId')
         try:
-            status = _sb.get_device_status(device_id, headers)
+            status = _switch.get_device_status(device_id, headers)
         except Exception as e:
             status = {"error": str(e)}
 
@@ -195,6 +187,28 @@ def get_switchbot_hub2_info(names=None):
         return {"message": "No Hub devices found matching filter", "hubs_found": len(hubs)}
     return results
 
+@mcp.tool(
+    name="get_switchbot_outdoor_sensor",
+    description="查询室外防水温湿度计（防水温湿度計 0E）的状态，包括温度、湿度、电量等。",
+)
+def get_switchbot_outdoor_sensor(name: str = "防水温湿度計 0E"):
+    """Query an outdoor WoIO temperature/humidity sensor by name.
+
+    Default name is the local sensor: '防水温湿度計 0E'. Returns raw device status and
+    a small parsed summary (temperature, humidity, battery, etc.)."""
+    try:
+        token, secret = _switch.load_token_secret()
+    except Exception as e:
+        return {"error": f"Missing SWITCHBOT_TOKEN/SECRET; failed to load from token.json: {e}"}
+
+    headers = _switch.make_headers(token, secret)
+
+    try:
+        res = _switch.get_wiosensor_status_by_name(name, headers)
+    except Exception as e:
+        return {"error": str(e)}
+
+    return res
 
 @mcp.tool(
     name="get_current_time",
@@ -226,8 +240,6 @@ def get_current_time(tz: str = None):
     except Exception as e:
         return {"error": str(e)}
 
-
-
 @mcp.tool(
     name="open_website",
     description="在默认浏览器中打开给定网址（仅支持 http/https），返回操作结果。",
@@ -258,7 +270,6 @@ def open_website(url: str, open_in_new: bool = True):
     except Exception as e:
         return {"error": str(e)}
 
-
 @mcp.tool(
     name="clear_chat",
     description="清空 AI 助手的当前聊天记录（当模型主动调用此工具时）",
@@ -276,7 +287,6 @@ def clear_chat(confirm: bool = True):
         return {"cleared": False, "message": "Confirmation required"}
     # 该工具仅返回结果；实际的 GUI/助手进程会在收到该工具调用结果后执行清空操作。
     return {"cleared": True, "message": "Chat cleared"}
-
 
 if __name__ == "__main__":
     mcp.run()
