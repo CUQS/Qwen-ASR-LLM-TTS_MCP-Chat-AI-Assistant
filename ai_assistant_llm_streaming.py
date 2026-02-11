@@ -8,13 +8,14 @@ import ollama
 import subprocess
 import asyncio  # MCP 是异步的
 import tempfile
+import time
 import numpy as np
 import sounddevice as sd
 import soundfile as sf
 import torch
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QTextEdit, 
                              QLineEdit, QPushButton, QHBoxLayout, QLabel, QCheckBox)
-from PyQt6.QtCore import QObject, pyqtSignal, Qt
+from PyQt6.QtCore import QObject, pyqtSignal, Qt, QTimer
 from PyQt6.QtGui import QTextDocument
 import html
 
@@ -113,6 +114,8 @@ class Communicator(QObject):
     append_chat = pyqtSignal(str, str) # 发送者, 内容
     request_exit = pyqtSignal()
     voice_status = pyqtSignal(str)  # 语音状态提示
+    set_clipboard_text = pyqtSignal(str)
+    paste_request = pyqtSignal()
 
 class AIAssistant(QWidget):
     def __init__(self):
@@ -127,6 +130,9 @@ class AIAssistant(QWidget):
         # --- 语音录制状态 ---
         self._recording = False
         self._recorded_frames = []
+        self._asr_input_recording = False
+        self._asr_input_frames = []
+        self._asr_input_stream = None
 
         # --- ASR / TTS 模型（延迟加载） ---
         self.asr_model = None
@@ -153,6 +159,8 @@ class AIAssistant(QWidget):
         self.comm.append_chat.connect(self.update_chat_display)
         self.comm.request_exit.connect(self.handle_exit)
         self.comm.voice_status.connect(lambda msg: self.update_chat_display("System", msg))
+        self.comm.set_clipboard_text.connect(self._set_clipboard_text)
+        self.comm.paste_request.connect(self._paste_from_clipboard)
 
         # MCP 工具定义：由 local_tools.py 提供，运行时通过 sync_tools_from_mcp() 动态获取。
         # 初始留空，若同步失败会回退为最小的 `run_command` 工具。
@@ -274,6 +282,20 @@ class AIAssistant(QWidget):
         self.display.append(f"<b style='color:{color}'>{sender}:</b> {content_html}<br>")
         # 自动滚动到底部
         self.display.verticalScrollBar().setValue(self.display.verticalScrollBar().maximum())
+
+    def _set_clipboard_text(self, text: str):
+        try:
+            QApplication.clipboard().setText(text)
+        except Exception as e:
+            self.comm.voice_status.emit(f"剪贴板写入失败: {e}")
+
+    def _paste_from_clipboard(self):
+        def _do_paste():
+            try:
+                keyboard.press_and_release('ctrl+v')
+            except Exception as e:
+                self.comm.voice_status.emit(f"粘贴失败: {e}")
+        QTimer.singleShot(50, _do_paste)
 
     def reset_chat(self):
         self.chat_history = []
@@ -420,7 +442,7 @@ class AIAssistant(QWidget):
 
     def _on_voice_key_press(self):
         """Ctrl+Alt+A 按下 → 开始录音"""
-        if self._recording:
+        if self._recording or self._asr_input_recording:
             return
         self._recording = True
         self._recorded_frames = []
@@ -461,6 +483,90 @@ class AIAssistant(QWidget):
 
         # 后台执行 ASR → LLM → TTS
         threading.Thread(target=self._voice_pipeline, args=(audio_data,), daemon=True).start()
+
+    def _on_asr_input_key_press(self):
+        """Ctrl+Alt+C 按下 → 开始录音，处理为快速语音输入"""
+        if self._recording or self._asr_input_recording:
+            return
+        self._asr_input_recording = True
+        self._asr_input_frames = []
+        self.comm.voice_status.emit("🎙️ 正在录音... 松开 Ctrl+Alt+C 停止")
+        print("[ASR Input] 开始录音")
+
+        def _record_callback(indata, frames, time_info, status):
+            if self._asr_input_recording:
+                self._asr_input_frames.append(indata.copy())
+
+        self._asr_input_stream = sd.InputStream(
+            samplerate=RECORD_SAMPLE_RATE,
+            channels=1,
+            dtype='float32',
+            callback=_record_callback,
+        )
+        self._asr_input_stream.start()
+
+    def _on_asr_input_key_release(self):
+        """Ctrl+Alt+C 松开 → 停止录音，调用 ASR 文本剪贴板 + Ctrl+V"""
+        if not self._asr_input_recording:
+            return
+        self._asr_input_recording = False
+        print("[ASR Input] 停止录音")
+
+        try:
+            if self._asr_input_stream is not None:
+                self._asr_input_stream.stop()
+                self._asr_input_stream.close()
+        except Exception:
+            pass
+        finally:
+            self._asr_input_stream = None
+
+        if not self._asr_input_frames:
+            self.comm.voice_status.emit("未检测到音频输入。")
+            return
+
+        audio_data = np.concatenate(self._asr_input_frames, axis=0).flatten()
+        self._asr_input_frames = []
+
+        threading.Thread(target=self.asr_input_in_context, args=(audio_data,), daemon=True).start()
+
+    def asr_input_in_context(self, audio_data: np.ndarray):
+        """ASR 识别 → 写入剪贴板 → Ctrl+V 粘贴"""
+        try:
+            if self.asr_model is None:
+                self.comm.voice_status.emit("ASR 模型尚未加载完成，请稍后再试")
+                return
+
+            if len(audio_data) < RECORD_SAMPLE_RATE * 0.3:  # 不足 0.3 秒
+                self.comm.voice_status.emit("录音时间太短")
+                return
+
+            self.comm.voice_status.emit("正在识别语音...")
+            tmp_wav = os.path.join(tempfile.gettempdir(), "_asr_input_context.wav")
+            sf.write(tmp_wav, audio_data, RECORD_SAMPLE_RATE)
+
+            results = self.asr_model.transcribe(audio=tmp_wav, language=None)
+            text = results[0].text.strip() if results else ""
+            print(f"[ASR Input] Text = {text}")
+
+            if not text:
+                self.comm.voice_status.emit("未识别到有效语音")
+                return
+
+            self.comm.set_clipboard_text.emit(text)
+
+            start = time.time()
+            while keyboard.is_pressed('ctrl') or keyboard.is_pressed('alt'):
+                if time.time() - start > 1.5:
+                    break
+                time.sleep(0.01)
+
+            self.comm.paste_request.emit()
+
+            self.comm.voice_status.emit(f"ASR 输入完成: {text}")
+        except Exception as e:
+            self.comm.voice_status.emit(f"ASR 输入失败: {e}")
+            print(f"[ASR Input] 异常: {e}")
 
     def _voice_pipeline(self, audio_data: np.ndarray):
         """语音对话全流程: ASR → LLM(Streaming) → TTS → 播放
@@ -945,7 +1051,10 @@ class AIAssistant(QWidget):
         # 语音快捷键：按下开始录音，松开停止
         keyboard.on_press_key('a', lambda e: self._on_voice_key_press() if keyboard.is_pressed('ctrl') and keyboard.is_pressed('alt') else None)
         keyboard.on_release_key('a', lambda e: self._on_voice_key_release() if not keyboard.is_pressed('a') else None)
-        print("助手已启动 (Ctrl+Alt+Q 唤起, Ctrl+Alt+E 退出, Ctrl+Alt+A 语音对话)")
+        # ASR 快速输入：按住录音，松开识别并粘贴
+        keyboard.on_press_key('c', lambda e: self._on_asr_input_key_press() if keyboard.is_pressed('ctrl') and keyboard.is_pressed('alt') else None)
+        keyboard.on_release_key('c', lambda e: self._on_asr_input_key_release() if not keyboard.is_pressed('c') else None)
+        print("助手已启动 (Ctrl+Alt+Q 唤起, Ctrl+Alt+E 退出, Ctrl+Alt+A 语音对话, Ctrl+Alt+C ASR 输入)")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

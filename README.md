@@ -129,7 +129,10 @@ python ai_assistant_llm_streaming.py
 | — | Open browser → `http://localhost:5100` |
 | `Ctrl + Alt + Q` | Open PyQt6 debug app |
 | `Ctrl + Alt + A` (hold) | Push-to-talk |
+| `Ctrl + Alt + C` (hold) | ASR input to current cursor (copy + paste) |
 | `Ctrl + Alt + E` | Quit |
+
+Note: 使用 `Ctrl + Alt + C` 语音输入时，请确保光标停留在需要输入的地方。
 
 ---
 
