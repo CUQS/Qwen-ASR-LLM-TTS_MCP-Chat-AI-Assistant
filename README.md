@@ -14,7 +14,7 @@
 
 > An easy-to-deploy multilingual AI assistant integrating
 > [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR) for speech recognition,
-> [Ollama](https://ollama.com/) + [Qwen3-30B-A3B](https://ollama.com/dengcao/Qwen3-30B-A3B-Instruct-2507) for LLM,
+> [Ollama](https://ollama.com/) + [Qwen3.5-35B-A3B](https://ollama.com/library/qwen3.5:35b-a3b) for LLM,
 > [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) / [Kokoro](https://github.com/hexgrad/kokoro) for speech synthesis,
 > and [MCP](https://github.com/modelcontextprotocol/python-sdk) for smart device control.
 
@@ -25,7 +25,7 @@
 | Category | Highlights |
 |---|---|
 | **Speech Recognition** | Multilingual (Chinese / English / Japanese …) via Qwen3-ASR |
-| **Language Model** | Powered by Qwen3-30B-A3B-Instruct-2507 through Ollama |
+| **Language Model** | Powered by Qwen3.5-35B-A3B through Ollama |
 | **Speech Synthesis** | Natural & expressive TTS with Qwen3-TTS or Kokoro |
 | **Smart Control** | MCP integration for IoT / smart device control |
 | **Interaction** | Real-time streaming LLM + TTS voice conversation |

@@ -32,7 +32,7 @@ from server import set_assistant, start_server as start_web_server, broadcast_me
 
 # --- 配置区 ---
 REMOTE_OLLAMA_HOST = "http://192.168.40.12:11434" 
-MODEL_NAME = "dengcao/Qwen3-30B-A3B-Instruct-2507"
+MODEL_NAME = "qwen3.5:35b-a3b"
 
 # TTS 引擎选择: "qwen" 或 "kokoro"
 TTS_ENGINE = "kokoro"  # 设为 "kokoro" 可使用 Kokoro TTS
