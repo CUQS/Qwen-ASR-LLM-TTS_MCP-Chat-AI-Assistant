@@ -421,16 +421,22 @@ class AIAssistant(QWidget):
 
                 if TTS_ENGINE == "kokoro":
                     print("[Voice] 开始加载 Kokoro TTS 模型...")
-                    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-                    self.kokoro_model = KModel(repo_id=KOKORO_REPO_ID).to(device).eval()
-                    en_pipeline = KPipeline(lang_code='a', repo_id=KOKORO_REPO_ID, model=False)
-                    def en_callable(text):
-                        return next(en_pipeline(text)).phonemes
-                    self.kokoro_pipeline = KPipeline(
-                        lang_code=KOKORO_LANGUAGE, repo_id=KOKORO_REPO_ID,
-                        model=self.kokoro_model, en_callable=en_callable,
-                    )
-                    print("[Voice] Kokoro TTS 模型加载完成")
+                    try:
+                        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+                        self.kokoro_model = KModel(repo_id=KOKORO_REPO_ID).to(device).eval()
+                        en_pipeline = KPipeline(lang_code='a', repo_id=KOKORO_REPO_ID, model=False)
+                        def en_callable(text):
+                            return next(en_pipeline(text)).phonemes
+                        self.kokoro_pipeline = KPipeline(
+                            lang_code=KOKORO_LANGUAGE, repo_id=KOKORO_REPO_ID,
+                            model=self.kokoro_model, en_callable=en_callable,
+                        )
+                        print("[Voice] Kokoro TTS 模型加载完成")
+                    except Exception as e:
+                        print(f"[Voice] Kokoro 加载异常: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        raise e
                 else:
                     print("[Voice] 开始加载 Qwen TTS 模型...")
                     self.tts_model = Qwen3TTSModel.from_pretrained(
