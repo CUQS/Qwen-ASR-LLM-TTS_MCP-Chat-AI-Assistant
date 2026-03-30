@@ -47,9 +47,18 @@ TTS_TOKEN_MAX_NUM = 100  # TTS 单句最大字符数，超过则继续拆分
 RECORD_SAMPLE_RATE = 16000  # ASR 要求 16kHz
 
 # Kokoro TTS 配置
-KOKORO_REPO_ID = 'hexgrad/Kokoro-82M-v1.1-zh'
+# https://huggingface.co/hexgrad/Kokoro-82M/blob/main/VOICES.md
+# CN
+# KOKORO_REPO_ID = 'hexgrad/Kokoro-82M-v1.1-zh'
+# KOKORO_SAMPLE_RATE = 24000
+# KOKORO_VOICE = 'zf_001'  # zf_001 女声, zm_010 男声
+# KOKORO_LANGUAGE = 'z'  # 'z' 中文
+
+# JP
+KOKORO_REPO_ID = 'hexgrad/Kokoro-82M'
 KOKORO_SAMPLE_RATE = 24000
-KOKORO_VOICE = 'zf_001'  # zf_001 女声, zm_010 男声
+KOKORO_VOICE = 'jf_alpha'  # sora_001 女声, haru_001 男声
+KOKORO_LANGUAGE = 'j'  # 'j' 日文
 
 # --- 句子拆分工具 ---
 _PUNCT_PATTERN = re.compile(r'(?<=[。！？；\n!\?;])')
@@ -336,6 +345,7 @@ class AIAssistant(QWidget):
                 model=MODEL_NAME,
                 messages=self.chat_history,
                 tools=self.tools,
+                think=False,
                 keep_alive=-1
             )
 
@@ -360,7 +370,7 @@ class AIAssistant(QWidget):
                     })
 
                 # 3. 再次请求获取最终回复
-                final_response = self.client.chat(model=MODEL_NAME, messages=self.chat_history)
+                final_response = self.client.chat(model=MODEL_NAME, messages=self.chat_history, think=False)
                 final_content = final_response['message']['content']
                 self.chat_history.append(final_response['message'])
                 self.comm.append_chat.emit("AI", final_content)
@@ -417,7 +427,7 @@ class AIAssistant(QWidget):
                     def en_callable(text):
                         return next(en_pipeline(text)).phonemes
                     self.kokoro_pipeline = KPipeline(
-                        lang_code='z', repo_id=KOKORO_REPO_ID,
+                        lang_code=KOKORO_LANGUAGE, repo_id=KOKORO_REPO_ID,
                         model=self.kokoro_model, en_callable=en_callable,
                     )
                     print("[Voice] Kokoro TTS 模型加载完成")
@@ -667,6 +677,7 @@ class AIAssistant(QWidget):
                         messages=self.chat_history,
                         tools=self.tools,
                         stream=True,
+                        think=False,
                         keep_alive=-1,
                     )
                     content1, tool_calls = _stream_response(stream1)
@@ -692,6 +703,7 @@ class AIAssistant(QWidget):
                             model=MODEL_NAME,
                             messages=self.chat_history,
                             stream=True,
+                            think=False,
                         )
                         content2, _ = _stream_response(stream2)
                         self.chat_history.append({'role': 'assistant', 'content': content2})
@@ -934,6 +946,7 @@ class AIAssistant(QWidget):
                         messages=self.chat_history,
                         tools=self.tools,
                         stream=True,
+                        think=False,
                         keep_alive=-1,
                     )
                     content1, tool_calls = _stream_response(stream1)
@@ -956,6 +969,7 @@ class AIAssistant(QWidget):
                             model=MODEL_NAME,
                             messages=self.chat_history,
                             stream=True,
+                            think=False,
                         )
                         content2, _ = _stream_response(stream2)
                         self.chat_history.append({'role': 'assistant', 'content': content2})

@@ -42,6 +42,13 @@
 | Current Time | Return current time in ISO, human-readable format and Unix timestamp (supports optional IANA timezone parameter) |
 | Open Website | Open an http/https URL in the default browser (returns success/failure information) |
 | Clear Chat | Request the assistant to clear its current chat history (tool call triggers local clear action) |
+| AI Assist Memo | Create/list/read/update/delete markdown memos and update `todo.md` under `ai_assist_memo/data` |
+
+### AI Assist Memo Storage
+
+- Timestamp memo path: `ai_assist_memo/data/YYYY/MM/YYYYMMDD_HHMMSS.md`
+- Todo memo path: `ai_assist_memo/data/todo.md`
+- Registered MCP tools: `memo_create`, `memo_list`, `memo_read`, `memo_update`, `memo_delete`, `memo_update_todo`
 
 ## 🖼️ Demo
 

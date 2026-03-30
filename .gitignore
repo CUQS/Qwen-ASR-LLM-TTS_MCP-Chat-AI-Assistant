@@ -90,12 +90,17 @@ tts/kokoro/
 tts/*.wav
 /*.wav
 debug.py
+openWakeWord/*.onnx
 
 # personal settings
 switchbot/devices_list.json
 switchbot/token.json
+ai_assist_memo/data/
 
 # SSL certificates (auto-generated)
 webpage_chat/certs/
+
+# upcoming
+openWakeWord/
 
 # End of file
